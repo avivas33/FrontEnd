@@ -23,12 +23,13 @@ const App = () => (
         future={{ v7_relativeSplatPath: true, v7_startTransition: true }}
       >
         <Routes>
-          <Route path="/" element={<LandingPage />} />
+          <Route path="/" element={<Index />} />
           <Route path="/index" element={<Index />} />
           <Route path="/landing" element={<LandingPage />} />
           <Route path="/invoice-list" element={<InvoiceList />} />
           <Route path="/invoice-list/:clientCode" element={<InvoiceList />} />
           <Route path="/invoice-details" element={<InvoiceDetails />} />
+          <Route path="/invoice-details/:invoiceNumber" element={<InvoiceDetails />} />
           <Route path="/payment-confirmation" element={<PaymentConfirmation />} />
           <Route path="*" element={<NotFound />} />
         </Routes>

@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  selfservice-celero:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: selfservice-celero-app
+    ports:
+      - "80:80"
+    restart: unless-stopped
+    networks:
+      - app-network
+    environment:
+      - NODE_ENV=production
+    volumes:
+      # Para logs de nginx
+      - ./logs/nginx:/var/log/nginx
+    labels:
+      - "com.celero.service=selfservice"
+      - "com.celero.description=Self Service Portal Celero"
+
+  # Opcional: Si necesitas HTTPS con Let's Encrypt
+  # certbot:
+  #   image: certbot/certbot
+  #   container_name: selfservice-celero-certbot
+  #   volumes:
+  #     - ./certbot/conf:/etc/letsencrypt
+  #     - ./certbot/www:/var/www/certbot
+  #   depends_on:
+  #     - selfservice-celero
+  #   command: certonly --webroot -w /var/www/certbot --email tu-email@dominio.com -d tu-dominio.com --agree-tos --no-eff-email
+
+networks:
+  app-network:
+    driver: bridge

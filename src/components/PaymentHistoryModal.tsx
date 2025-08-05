@@ -57,10 +57,9 @@ export const PaymentHistoryModal: React.FC<PaymentHistoryModalProps> = ({
 
   useEffect(() => {
     if (isOpen && clientCode) {
-      // Inicializar fechas por defecto (últimos 3 meses)
+      // Inicializar fechas por defecto (primer día del año actual y fecha actual)
       const fechaFinDefault = new Date();
-      const fechaInicioDefault = new Date();
-      fechaInicioDefault.setMonth(fechaInicioDefault.getMonth() - 3);
+      const fechaInicioDefault = new Date(fechaFinDefault.getFullYear(), 0, 1); // Primer día del año
       
       setFechaInicio(format(fechaInicioDefault, 'yyyy-MM-dd'));
       setFechaFin(format(fechaFinDefault, 'yyyy-MM-dd'));
@@ -101,8 +100,17 @@ export const PaymentHistoryModal: React.FC<PaymentHistoryModalProps> = ({
 
       if (response.success) {
         setRecibos(response.data);
-        setTotalRecaudado(response.meta.totalRecaudado);
-        setTotalRecaudadoFormatted(response.meta.totalRecaudadoFormatted);
+        
+        // Calcular el total solo de las facturas mostradas
+        const totalFacturas = response.data.reduce((total, recibo) => {
+          const montoRecibo = recibo.detalles.reduce((subtotal, detalle) => {
+            return subtotal + (parseFloat(detalle.recValNum) || 0);
+          }, 0);
+          return total + montoRecibo;
+        }, 0);
+        
+        setTotalRecaudado(totalFacturas);
+        setTotalRecaudadoFormatted(formatCurrency(totalFacturas));
         setFiltrosAplicados(true);
       } else {
         toast({
@@ -135,10 +143,14 @@ export const PaymentHistoryModal: React.FC<PaymentHistoryModalProps> = ({
 
   const formatCurrency = (value: string | number) => {
     const numValue = typeof value === 'string' ? parseFloat(value) : value;
-    return new Intl.NumberFormat('es-PA', {
+    if (isNaN(numValue)) return 'USD 0.00';
+    
+    // Usar formato estándar USD para evitar problemas de locale
+    return new Intl.NumberFormat('en-US', {
       style: 'currency',
       currency: 'USD',
-      minimumFractionDigits: 2
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2
     }).format(numValue);
   };
 
@@ -244,6 +256,11 @@ export const PaymentHistoryModal: React.FC<PaymentHistoryModalProps> = ({
               {recibos.map((recibo) => {
                 const isExpanded = expandedRecibos.has(recibo.id);
                 
+                // Calcular el total de las facturas aplicadas para este recibo
+                const totalFacturasAplicadas = recibo.detalles.reduce((total, detalle) => {
+                  return total + (parseFloat(detalle.recValNum) || 0);
+                }, 0);
+                
                 return (
                   <Card key={recibo.id} className="overflow-hidden">
                     <div 
@@ -282,10 +299,9 @@ export const PaymentHistoryModal: React.FC<PaymentHistoryModalProps> = ({
                             </div>
                             
                             <div className="text-right">
-                              <p className="text-xs text-gray-500">Monto</p>
-                              <p className="font-bold text-billpay-blue flex items-center justify-end gap-1">
-                                <DollarSign className="h-3 w-3" />
-                                {formatCurrency(recibo.curPayValNum)}
+                              <p className="text-xs text-gray-500">Monto Facturas Aplicadas</p>
+                              <p className="font-bold text-billpay-blue text-right">
+                                {formatCurrency(totalFacturasAplicadas)}
                               </p>
                             </div>
                           </div>

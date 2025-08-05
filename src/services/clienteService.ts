@@ -170,6 +170,31 @@ export class ClienteService {
   }
 
   /**
+   * Obtener facturas por empresa específica
+   */
+  async getFacturasPorEmpresa(empresaCode: string, params: {
+    range: string;
+    fields?: string;
+    sort?: string;
+    filterCustCode: string;
+  }): Promise<{ data: { IVVc: any[]; totalCount: number } }> {
+    try {
+      const queryParams: Record<string, string> = {
+        range: params.range,
+        'filter.CustCode': params.filterCustCode
+      };
+      
+      if (params.fields) queryParams.fields = params.fields;
+      if (params.sort) queryParams.sort = params.sort;
+      
+      return await apiClient.get(`/api/clientes/facturas/${empresaCode}`, queryParams);
+    } catch (error) {
+      console.error('Error al obtener facturas por empresa:', error);
+      throw new Error('No se pudieron obtener las facturas de la empresa');
+    }
+  }
+
+  /**
    * Obtener recibos de caja
    */
   async getRecibosCaja(params: {

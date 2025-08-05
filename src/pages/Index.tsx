@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
-import { ArrowLeft, Home } from 'lucide-react';
+import { ArrowLeft } from 'lucide-react';
 import { Card } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -91,27 +91,12 @@ const Index = () => {
       <BillPayHeader />
       
       <main className="flex-1 container max-w-3xl py-6 px-4">
-        <div className="mb-6">
-          <button 
-            onClick={() => navigate('/landing')} 
-            className="flex items-center text-billpay-blue hover:underline"
-          >
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            REGRESAR
-          </button>
-        </div>
         
-        <h1 className="text-2xl font-bold text-black mb-6">Pagar facturas</h1>
+        <h1 className="text-2xl font-bold text-black mb-6">Consulta de Saldo, Facturas y Pagos</h1>
         
         <Card className="p-6 shadow-sm border-gray-100">
           <h2 className="text-xl text-black font-medium mb-6">Paga en línea</h2>
           
-          <div className="mb-6">
-            <div className="flex items-center py-4">
-              <Home className="h-6 w-6 mr-2 text-billpay-blue" />
-              <span className="font-medium">Hogar</span>
-            </div>
-          </div>
           
           <form onSubmit={handleSearch}>
             <div className="mb-6">

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { ArrowLeft, CreditCard, Eye, EyeOff, Smartphone, Building2, Wallet } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -12,6 +12,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import BillPayHeader from '@/components/BillPayHeader';
 import { ACHPaymentModal } from '@/components/ACHPaymentModal';
 import { clienteService, pagoService, type CompanyPaymentMethods, type PayPalCreateOrderRequest } from '@/services';
+
+// Función para formatear números con comas para miles y punto para decimales
+const formatCurrency = (amount: number): string => {
+  return amount.toLocaleString('en-US', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  });
+};
 
 interface InvoiceData {
   clientName: string;
@@ -37,6 +45,7 @@ interface LocationState {
 const InvoiceDetails = () => {
   const location = useLocation();
   const navigate = useNavigate();
+  const { invoiceNumber } = useParams<{ invoiceNumber?: string }>();
   const state = location.state as LocationState & { mobile?: string; eMail?: string };
   
   const [isOpen, setIsOpen] = useState(true);
@@ -64,12 +73,117 @@ const InvoiceDetails = () => {
   const [paymentMethods, setPaymentMethods] = useState<CompanyPaymentMethods | null>(null);
   const [loadingPaymentMethods, setLoadingPaymentMethods] = useState(true);
   
+  // States para cargar factura por parámetro
+  const [loadingInvoice, setLoadingInvoice] = useState(false);
+  const [invoiceState, setInvoiceState] = useState<LocationState & { mobile?: string; eMail?: string } | null>(null);
+  
   // Refs
   const yappyBtnRef = useRef<HTMLDivElement>(null);
   
-  // If there's no invoice data, redirect to the invoice list page
-  if (!state?.invoiceDataList || state.invoiceDataList.length === 0) {
-    navigate('/invoice-list');
+  // Efecto para cargar factura cuando se pasa como parámetro
+  useEffect(() => {
+    const loadInvoiceByNumber = async () => {
+      if (!invoiceNumber || state?.invoiceDataList) {
+        // Si no hay parámetro o ya tenemos datos del state, no hacer nada
+        return;
+      }
+      
+      setLoadingInvoice(true);
+      try {
+        // Extraer código de cliente del número de factura
+        // Formato esperado: EMPRESA-NUMERO o similar
+        const clientCode = invoiceNumber.split('-')[0] || invoiceNumber.substring(0, 3);
+        
+        // Buscar el cliente primero
+        const clientResponse = await clienteService.getCliente(clientCode);
+        if (!clientResponse.data?.CUVc?.length) {
+          toast.error('No se encontró información del cliente para esta factura');
+          navigate('/');
+          return;
+        }
+        
+        const clientData = clientResponse.data.CUVc[0];
+        
+        // Buscar facturas abiertas del cliente
+        const facturasResponse = await clienteService.getFacturasAbiertas(clientCode);
+        if (!facturasResponse.data?.facturas?.length) {
+          toast.error('No se encontraron facturas pendientes para este cliente');
+          navigate('/');
+          return;
+        }
+        
+        // Filtrar la factura específica
+        const facturaEspecifica = facturasResponse.data.facturas.find(
+          (f: any) => f.invoiceNumber === invoiceNumber || f.numero === invoiceNumber
+        );
+        
+        if (!facturaEspecifica) {
+          toast.error(`No se encontró la factura ${invoiceNumber} en las facturas pendientes`);
+          navigate('/');
+          return;
+        }
+        
+        // Convertir datos al formato esperado
+        const invoiceData: InvoiceData = {
+          clientName: clientData.Name,
+          clientCode: clientData.Code,
+          serviceType: 'residential',
+          invoiceNumber: facturaEspecifica.invoiceNumber || facturaEspecifica.numero,
+          officialSerNr: facturaEspecifica.officialSerNr || '',
+          payDeal: facturaEspecifica.payDeal || '',
+          invDate: facturaEspecifica.invDate || facturaEspecifica.fecha,
+          dueDate: facturaEspecifica.dueDate || facturaEspecifica.fechaVencimiento,
+          amount: facturaEspecifica.amount || facturaEspecifica.monto,
+          status: facturaEspecifica.status || facturaEspecifica.estado || 'pending'
+        };
+        
+        // Determinar código de empresa
+        const empresaCode = invoiceNumber.split('-')[0] || '2';
+        
+        // Crear state simulado
+        const simulatedState: LocationState & { mobile?: string; eMail?: string } = {
+          clientCode: clientData.Code,
+          searchType: 'direct',
+          invoiceDataList: [invoiceData],
+          totalAmount: invoiceData.amount,
+          empresaSeleccionada: empresaCode,
+          mobile: clientData.Mobile,
+          eMail: clientData.eMail
+        };
+        
+        setInvoiceState(simulatedState);
+        toast.success(`Factura ${invoiceNumber} cargada correctamente`);
+        
+      } catch (error) {
+        console.error('Error al cargar factura:', error);
+        toast.error('Error al cargar la información de la factura');
+        navigate('/');
+      } finally {
+        setLoadingInvoice(false);
+      }
+    };
+    
+    loadInvoiceByNumber();
+  }, [invoiceNumber, state, navigate]);
+  
+  // Usar el state original o el simulado
+  const currentState = state || invoiceState;
+  
+  // Si está cargando la factura por parámetro
+  if (loadingInvoice) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-lg">Cargando factura {invoiceNumber}...</p>
+        </div>
+      </div>
+    );
+  }
+  
+  // Si no hay datos de factura, redirigir
+  if (!currentState?.invoiceDataList || currentState.invoiceDataList.length === 0) {
+    navigate('/');
     return null;
   }
   
@@ -100,7 +214,7 @@ const InvoiceDetails = () => {
   useEffect(() => {
     const loadPaymentMethods = async () => {
       // Obtener el código de empresa desde las facturas seleccionadas
-      const empresaCode = state?.empresaSeleccionada || state?.invoiceDataList?.[0]?.invoiceNumber?.split('-')?.[0];
+      const empresaCode = currentState?.empresaSeleccionada || currentState?.invoiceDataList?.[0]?.invoiceNumber?.split('-')?.[0];
       
       if (!empresaCode) {
         console.warn('No se pudo determinar el código de empresa');
@@ -139,7 +253,7 @@ const InvoiceDetails = () => {
     };
 
     loadPaymentMethods();
-  }, [state?.empresaSeleccionada, state?.invoiceDataList]);
+  }, [currentState?.empresaSeleccionada, currentState?.invoiceDataList]);
 
   useEffect(() => {
     // Cargar el script de Yappy solo una vez
@@ -161,15 +275,15 @@ const InvoiceDetails = () => {
             btnyappy.isButtonLoading = true;
             // Limpiar y loguear el móvil justo antes de crear la orden
             let aliasYappy = yappyPhone;
-            if (state?.mobile) {
-              aliasYappy = limpiarCelular(state.mobile);
+            if (currentState?.mobile) {
+              aliasYappy = limpiarCelular(currentState.mobile);
               setYappyPhone(aliasYappy); // sincroniza el input visual
             }
             // Construir el body según la documentación YappyOrdenRequest
             const nowEpoch = Math.floor(Date.now() / 1000);
-            const total = state.totalAmount.toFixed(2);
+            const total = currentState.totalAmount.toFixed(2); // Para API, mantener formato sin comas
             const body = {
-              orderId: state.invoiceDataList[0].invoiceNumber, // o un id único de orden
+              orderId: currentState.invoiceDataList[0].invoiceNumber, // o un id único de orden
               domain: "https://selfservice-dev.celero.network", // URL de dominio configurado en Yappy Comercial
               paymentDate: nowEpoch,
               aliasYappy: aliasYappy,
@@ -198,20 +312,28 @@ const InvoiceDetails = () => {
         });
         // Eventos de éxito y error
         btnyappy.addEventListener('eventSuccess', async (event: any) => {
-          toast.success('Pago Yappy realizado con éxito');
+          // Crear mensaje detallado con facturas
+          const facturesDetail = currentState.invoiceDataList.map(inv => 
+            `${inv.invoiceNumber}: $${formatCurrency(inv.amount)}`
+          ).join(', ');
+          
+          toast.success('¡Pago Yappy realizado con éxito!', {
+            description: `Facturas pagadas: ${facturesDetail}. Total: $${formatCurrency(currentState.totalAmount)}`,
+            duration: 5000,
+          });
           // Crear recibo de caja con Forma de Pago 'YP' y RefStr = orderId
           try {
-            const orderId = event?.detail?.orderId || state.invoiceDataList[0].invoiceNumber;
+            const orderId = event?.detail?.orderId || currentState.invoiceDataList[0].invoiceNumber;
             const recibo = {
               serNr: orderId, // Usar orderId como serNr para trazabilidad
               transDate: new Date().toISOString().slice(0, 10),
               payMode: 'YP',
-              person: state.invoiceDataList[0].clientName || '',
-              cuCode: state.invoiceDataList[0].clientCode || '',
+              person: currentState.invoiceDataList[0].clientName || '',
+              cuCode: currentState.invoiceDataList[0].clientCode || '',
               refStr: orderId,
-              detalles: state.invoiceDataList.map(inv => ({
+              detalles: currentState.invoiceDataList.map(inv => ({
                 invoiceNr: inv.invoiceNumber,
-                sum: inv.amount.toFixed(2),
+                sum: formatCurrency(inv.amount),
                 objects: '',
                 stp: '1'
               }))
@@ -223,12 +345,13 @@ const InvoiceDetails = () => {
             }
             navigate('/payment-confirmation', {
               state: {
-                clientName: state.invoiceDataList[0].clientName,
-                clientCode: state.invoiceDataList[0].clientCode,
-                invoiceNumbers: state.invoiceDataList.map(inv => inv.invoiceNumber).join(', '),
-                amount: state.totalAmount,
+                clientName: currentState.invoiceDataList[0].clientName,
+                clientCode: currentState.invoiceDataList[0].clientCode,
+                invoiceNumbers: currentState.invoiceDataList.map(inv => inv.invoiceNumber).join(', '),
+                amount: currentState.totalAmount,
                 paymentMethod: 'YAPPY',
-                invoiceData: state.invoiceDataList.map(inv => ({
+                receiptNumber: reciboData.data?.SerNr, // Número de recibo del ERP
+                invoiceData: currentState.invoiceDataList.map(inv => ({
                   ...inv,
                   status: 'pagado' // Marcar como pagada
                 }))
@@ -245,12 +368,12 @@ const InvoiceDetails = () => {
       }
     }, 300);
     return () => clearInterval(interval);
-  }, [state, yappyPhone]);
+  }, [currentState, yappyPhone]);
   
   // Al cargar la página, prellenar el móvil si hay datos disponibles
   useEffect(() => {
     // Asegurémonos de que stateMobile sea un string o undefined, no null
-    const stateMobile = state?.mobile || undefined;
+    const stateMobile = currentState?.mobile || undefined;
     
     if (!yappyPhone && stateMobile) {
       const cleaned = limpiarCelular(stateMobile);
@@ -263,14 +386,14 @@ const InvoiceDetails = () => {
       const defaultMobile = '69387770';
       setYappyPhone(defaultMobile);
     }
-  }, []);
+  }, [currentState?.mobile, yappyPhone]);
 
   // Prellenar el campo yappyPhone cada vez que el usuario cambie a Yappy
   useEffect(() => {
     if (paymentMethod === 'yappy' && !yappyPhone) {
       // Si tenemos un número en el state, usarlo
-      if (state?.mobile) {
-        const cleaned = limpiarCelular(state.mobile);
+      if (currentState?.mobile) {
+        const cleaned = limpiarCelular(currentState.mobile);
         
         if (cleaned.length > 0) {
           setYappyPhone(cleaned);
@@ -282,24 +405,24 @@ const InvoiceDetails = () => {
         setYappyPhone(defaultMobile);
       }
     }
-  }, [paymentMethod]);
+  }, [paymentMethod, currentState?.mobile]);
   
   const handlePayPalPayment = async () => {
     setIsProcessing(true);
     
     try {
       // Prepare PayPal order data
-      const invoiceNumbers = state.invoiceDataList.map(inv => inv.invoiceNumber).join(', ');
+      const invoiceNumbers = currentState.invoiceDataList.map(inv => inv.invoiceNumber).join(', ');
       const orderRequest: PayPalCreateOrderRequest = {
-        clienteCode: state.invoiceDataList[0].clientCode,
+        clienteCode: currentState.invoiceDataList[0].clientCode,
         numeroFactura: invoiceNumbers,
-        amount: state.totalAmount,
+        amount: currentState.totalAmount,
         currency: 'USD',
         description: `Pago de facturas: ${invoiceNumbers}`,
         returnUrl: `${window.location.origin}/payment-confirmation?paypal=true`,
         cancelUrl: `${window.location.origin}/invoice-details`,
-        emailCliente: state.eMail || undefined,
-        nombreCliente: state.invoiceDataList[0].clientName
+        emailCliente: currentState.eMail || undefined,
+        nombreCliente: currentState.invoiceDataList[0].clientName
       };
       
       // Create PayPal order
@@ -308,11 +431,11 @@ const InvoiceDetails = () => {
       if (orderResponse.success && orderResponse.data) {
         // Store invoice data in sessionStorage for later retrieval
         sessionStorage.setItem('paypalPaymentData', JSON.stringify({
-          clientCode: state.invoiceDataList[0].clientCode,
-          clientName: state.invoiceDataList[0].clientName,
+          clientCode: currentState.invoiceDataList[0].clientCode,
+          clientName: currentState.invoiceDataList[0].clientName,
           invoiceNumbers: invoiceNumbers,
-          invoiceDataList: state.invoiceDataList,
-          totalAmount: state.totalAmount,
+          invoiceDataList: currentState.invoiceDataList,
+          totalAmount: currentState.totalAmount,
           orderId: orderResponse.data.orderId
         }));
         
@@ -352,39 +475,52 @@ const InvoiceDetails = () => {
       setIsProcessing(true);
       try {
         // Construir el body para el endpoint
-        const invoiceNumbers = state.invoiceDataList.map(inv => inv.invoiceNumber).join(', ');
-        console.log('Email del cliente:', state.eMail);
+        const invoiceNumbers = currentState.invoiceDataList.map(inv => inv.invoiceNumber).join(', ');
+        console.log('Email del cliente:', currentState.eMail);
+        // Determinar el código de empresa desde las facturas seleccionadas
+        const companyCode = currentState.empresaSeleccionada || currentState.invoiceDataList[0]?.invoiceNumber?.split('-')?.[0] || '2';
+        console.log('Procesando pago Cobalt para empresa:', companyCode);
+        
         const venta = {
           currency_code: 'USD',
-          amount: Math.round(state.totalAmount * 100).toString(), // en centavos
+          amount: Math.round(currentState.totalAmount * 100).toString(), // en centavos
           pan: cardNumber.replace(/\s+/g, ''),
           exp_date: expiryDate,
           cvv2: cvv,
           card_holder: cardName,
           tax: '0',
           tip: '0',
-          // --- Nuevos campos agregados ---
-          customer_email: state.eMail || 'not-provided@celero.com',
-          customer_name: state.invoiceDataList[0].clientName,
+          // --- Campos adicionales para notificaciones y configuración ---
+          customer_email: currentState.eMail || 'not-provided@celero.com',
+          customer_name: currentState.invoiceDataList[0].clientName,
           order_id: invoiceNumbers,
           description: `Pago de facturas: ${invoiceNumbers}`,
-          contract_number: state.invoiceDataList[0].clientCode
+          contract_number: currentState.invoiceDataList[0].clientCode,
+          company_code: companyCode // Código de empresa para credenciales Cobalt específicas
         };
         const data = await pagoService.ventaTarjeta(venta);
         if (data.status === 'ok' && data.data?.status === 'authorized') {
-          toast.success('Pago realizado con éxito');
+          // Crear mensaje detallado con facturas
+          const facturesDetail = currentState.invoiceDataList.map(inv => 
+            `${inv.invoiceNumber}: $${formatCurrency(inv.amount)}`
+          ).join(', ');
+          
+          toast.success('¡Pago realizado con éxito!', {
+            description: `Facturas pagadas: ${facturesDetail}. Total: $${formatCurrency(currentState.totalAmount)}`,
+            duration: 5000,
+          });
           // Crear recibo de caja
           try {
             const recibo = {
               serNr: data.data.ballot || '',
               transDate: new Date().toISOString().slice(0, 10),
               payMode: 'TC',
-              person: state.invoiceDataList[0].clientName || '',
-              cuCode: state.invoiceDataList[0].clientCode || '',
+              person: currentState.invoiceDataList[0].clientName || '',
+              cuCode: currentState.invoiceDataList[0].clientCode || '',
               refStr: data.data.authorization_number || '',
-              detalles: state.invoiceDataList.map(inv => ({
+              detalles: currentState.invoiceDataList.map(inv => ({
                 invoiceNr: inv.invoiceNumber,
-                sum: inv.amount.toFixed(2),
+                sum: formatCurrency(inv.amount),
                 objects: '',
                 stp: '1'
               }))
@@ -392,23 +528,27 @@ const InvoiceDetails = () => {
             const reciboData = await pagoService.crearRecibo(recibo);
             if (!reciboData.success) {
               toast.error(reciboData.message || 'Error al crear el recibo de caja');
+              return;
             }
+            
+            navigate('/payment-confirmation', { 
+              state: {
+                clientName: currentState.invoiceDataList[0].clientName,
+                clientCode: currentState.invoiceDataList[0].clientCode,
+                invoiceNumbers: currentState.invoiceDataList.map(inv => inv.invoiceNumber).join(', '),
+                amount: currentState.totalAmount,
+                paymentMethod: 'TARJETA',
+                receiptNumber: reciboData.data?.SerNr, // Número de recibo del ERP
+                invoiceData: currentState.invoiceDataList.map(inv => ({
+                  ...inv,
+                  status: 'pagado' // Marcar como pagada
+                }))
+              }
+            });
           } catch (err) {
             toast.error('Error de conexión al crear el recibo de caja');
+            return;
           }
-          navigate('/payment-confirmation', { 
-            state: {
-              clientName: state.invoiceDataList[0].clientName,
-              clientCode: state.invoiceDataList[0].clientCode,
-              invoiceNumbers: state.invoiceDataList.map(inv => inv.invoiceNumber).join(', '),
-              amount: state.totalAmount,
-              paymentMethod: 'TARJETA',
-              invoiceData: state.invoiceDataList.map(inv => ({
-                ...inv,
-                status: 'pagado' // Marcar como pagada
-              }))
-            }
-          });
         } else {
           toast.error(data.message || 'Error procesando el pago');
         }
@@ -438,15 +578,23 @@ const InvoiceDetails = () => {
       setIsProcessing(false);
       
       // Success case - navigate to confirmation page
-      toast.success('Pago realizado con éxito');
+      // Crear mensaje detallado con facturas
+      const facturesDetail = currentState.invoiceDataList.map(inv => 
+        `${inv.invoiceNumber}: $${inv.amount.toFixed(2)}`
+      ).join(', ');
+      
+      toast.success('¡Pago realizado con éxito!', {
+        description: `Facturas pagadas: ${facturesDetail}. Total: $${currentState.totalAmount.toFixed(2)}`,
+        duration: 5000,
+      });
       navigate('/payment-confirmation', { 
         state: {
-          clientName: state.invoiceDataList[0].clientName,
-          clientCode: state.invoiceDataList[0].clientCode,
-          invoiceNumbers: state.invoiceDataList.map(inv => inv.invoiceNumber).join(', '),
-          amount: state.totalAmount,
+          clientName: currentState.invoiceDataList[0].clientName,
+          clientCode: currentState.invoiceDataList[0].clientCode,
+          invoiceNumbers: currentState.invoiceDataList.map(inv => inv.invoiceNumber).join(', '),
+          amount: currentState.totalAmount,
           paymentMethod: paymentMethod,
-          invoiceData: state.invoiceDataList
+          invoiceData: currentState.invoiceDataList
         }
       });
     }, 2000);
@@ -508,7 +656,7 @@ const InvoiceDetails = () => {
         try {
           // Si es un pago global, registrar para cada factura
           if (file.isGlobal) {
-            for (const invoice of state.invoiceDataList) {
+            for (const invoice of currentState.invoiceDataList) {
               const pagoData = {
                 clienteCode: invoice.clientCode,
                 numeroFactura: invoice.invoiceNumber,
@@ -529,7 +677,7 @@ const InvoiceDetails = () => {
             }
           } else {
             // Pago individual - buscar la factura correspondiente
-            const invoice = state.invoiceDataList.find(inv => inv.invoiceNumber === file.invoiceId);
+            const invoice = currentState.invoiceDataList.find(inv => inv.invoiceNumber === file.invoiceId);
             if (invoice) {
               const pagoData = {
                 clienteCode: invoice.clientCode,
@@ -561,17 +709,25 @@ const InvoiceDetails = () => {
       
       // Mostrar resultados
       if (registrosExitosos.length > 0) {
-        toast.success(`${registrosExitosos.length} comprobantes registrados exitosamente`);
+        // Crear mensaje detallado con facturas
+        const facturesDetail = currentState.invoiceDataList.map(inv => 
+          `${inv.invoiceNumber}: $${inv.amount.toFixed(2)}`
+        ).join(', ');
+        
+        toast.success(`¡Pago ACH realizado con éxito!`, {
+          description: `${registrosExitosos.length} comprobantes registrados. Facturas: ${facturesDetail}. Total: $${formatCurrency(currentState.totalAmount)}`,
+          duration: 5000,
+        });
         
         // Crear recibo de caja en el ERP
         const recibo = {
           serNr: `ACH-${Date.now()}`,
           transDate: new Date().toISOString().slice(0, 10),
           payMode: 'ACH',
-          person: state.invoiceDataList[0].clientName || '',
-          cuCode: state.invoiceDataList[0].clientCode || '',
+          person: currentState.invoiceDataList[0].clientName || '',
+          cuCode: currentState.invoiceDataList[0].clientCode || '',
           refStr: `ACH-${files[0]?.numeroTransaccion} - ${registrosExitosos.length} comprobantes`,
-          detalles: state.invoiceDataList.map(inv => ({
+          detalles: currentState.invoiceDataList.map(inv => ({
             invoiceNr: inv.invoiceNumber,
             sum: inv.amount.toFixed(2),
             objects: '',
@@ -588,14 +744,15 @@ const InvoiceDetails = () => {
         // Navegar a confirmación
         navigate('/payment-confirmation', {
           state: {
-            clientName: state.invoiceDataList[0].clientName,
-            clientCode: state.invoiceDataList[0].clientCode,
-            invoiceNumbers: state.invoiceDataList.map(inv => inv.invoiceNumber).join(', '),
-            amount: state.totalAmount,
+            clientName: currentState.invoiceDataList[0].clientName,
+            clientCode: currentState.invoiceDataList[0].clientCode,
+            invoiceNumbers: currentState.invoiceDataList.map(inv => inv.invoiceNumber).join(', '),
+            amount: currentState.totalAmount,
             paymentMethod: 'ACH',
             numeroTransaccion: files[0]?.numeroTransaccion,
             comprobantesRegistrados: registrosExitosos.length,
-            invoiceData: state.invoiceDataList.map(inv => ({
+            receiptNumber: reciboData.data?.SerNr, // Número de recibo del ERP
+            invoiceData: currentState.invoiceDataList.map(inv => ({
               ...inv,
               status: 'pagado'
             }))
@@ -621,7 +778,7 @@ const InvoiceDetails = () => {
       <main className="flex-1 container max-w-4xl py-6 px-4">
         <div className="mb-6">
           <button 
-            onClick={() => navigate('/invoice-list', { state: { clientCode: state.clientCode, searchType: state.searchType } })} 
+            onClick={() => navigate('/invoice-list', { state: { clientCode: currentState.clientCode, searchType: currentState.searchType } })} 
             className="flex items-center text-billpay-blue hover:underline"
           >
             <ArrowLeft className="mr-2 h-4 w-4" />
@@ -638,7 +795,7 @@ const InvoiceDetails = () => {
                 <h2 className="text-xl text-black font-medium mb-4">Resumen de facturas</h2>
                 <Collapsible open={isOpen} onOpenChange={setIsOpen}>
                   <CollapsibleTrigger className="flex w-full justify-between items-center p-2 hover:bg-gray-50 rounded">
-                    <p className="text-black font-medium">{state.invoiceDataList.length} # Facturas:</p>
+                    <p className="text-black font-medium">{currentState.invoiceDataList.length} # Facturas:</p>
                     <div className="text-sm text-gray-500">{isOpen ? 'Ocultar' : 'Mostrar'}</div>
                   </CollapsibleTrigger>
                   <CollapsibleContent>
@@ -653,12 +810,12 @@ const InvoiceDetails = () => {
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {state.invoiceDataList.map((invoice, index) => (
+                          {currentState.invoiceDataList.map((invoice, index) => (
                             <TableRow key={index}>
                               <TableCell>{invoice.invoiceNumber}</TableCell>
                               <TableCell>{parseLocalDate(invoice.invDate).toLocaleDateString()}</TableCell>
                               <TableCell>{parseLocalDate(invoice.dueDate).toLocaleDateString()}</TableCell>
-                              <TableCell className="font-medium">${invoice.amount.toFixed(2)}</TableCell>
+                              <TableCell className="font-medium">${formatCurrency(invoice.amount)}</TableCell>
                             </TableRow>
                           ))}
                         </TableBody>
@@ -670,7 +827,7 @@ const InvoiceDetails = () => {
               
               <div className="flex justify-between py-3 border-t border-b mb-6">
                 <span className="font-medium">Total a pagar:</span>
-                <span className="text-xl font-bold text-black">${state.totalAmount.toFixed(2)}</span>
+                <span className="text-xl font-bold text-black">${formatCurrency(currentState.totalAmount)}</span>
               </div>
               
               <div>
@@ -704,8 +861,8 @@ const InvoiceDetails = () => {
                   <button
                     onClick={() => {
                       setPaymentMethod('yappy');
-                      if (state?.mobile) {
-                        const cleaned = limpiarCelular(state.mobile);
+                      if (currentState?.mobile) {
+                        const cleaned = limpiarCelular(currentState.mobile);
                         setYappyPhone(cleaned);
                       }
                     }}
@@ -947,7 +1104,7 @@ const InvoiceDetails = () => {
                     </div>
                     <div className="text-center text-gray-600 text-sm">
                       <p>Serás redirigido a PayPal para completar el pago</p>
-                      <p className="mt-1">Monto total: <strong>${state.totalAmount.toFixed(2)}</strong></p>
+                      <p className="mt-1">Monto total: <strong>${formatCurrency(currentState.totalAmount)}</strong></p>
                     </div>
                   </div>
                 )}
@@ -965,12 +1122,12 @@ const InvoiceDetails = () => {
               <div className="space-y-3">
                 <div>
                   <p className="text-sm text-gray-500">Cliente:</p>
-                  <p className="font-medium">{state.invoiceDataList[0].clientName}</p>
+                  <p className="font-medium">{currentState.invoiceDataList[0].clientName}</p>
                 </div>
                 
                 <div>
                   <p className="text-sm text-gray-500">Código de cliente:</p>
-                  <p className="font-medium">{state.invoiceDataList[0].clientCode}</p>
+                  <p className="font-medium">{currentState.invoiceDataList[0].clientCode}</p>
                 </div>
                 
                 <div>
@@ -984,12 +1141,12 @@ const InvoiceDetails = () => {
                 
                 <div className="flex justify-between py-1">
                   <span className="text-gray-500"># Facturas:</span>
-                  <span>{state.invoiceDataList.length}</span>
+                  <span>{currentState.invoiceDataList.length}</span>
                 </div>
                 
                 <div className="flex justify-between py-1 border-t mt-2 pt-2">
                   <span className="font-medium">Total:</span>
-                  <span className="font-bold text-black">${state.totalAmount.toFixed(2)}</span>
+                  <span className="font-bold text-black">${formatCurrency(currentState.totalAmount)}</span>
                 </div>
               </div>
             </Card>
@@ -1001,8 +1158,8 @@ const InvoiceDetails = () => {
       <ACHPaymentModal
         isOpen={showACHModal}
         onClose={() => setShowACHModal(false)}
-        invoices={state.invoiceDataList}
-        totalAmount={state.totalAmount}
+        invoices={currentState.invoiceDataList}
+        totalAmount={currentState.totalAmount}
         onConfirm={handleACHConfirm}
       />
     </div>

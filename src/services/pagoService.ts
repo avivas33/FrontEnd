@@ -9,6 +9,13 @@ export interface DatosTarjeta {
   card_holder: string;
   tax: string;
   tip: string;
+  // Campos adicionales para notificaciones (NO se envían a Cobalt)
+  customer_email?: string;
+  customer_name?: string;
+  order_id?: string;
+  description?: string;
+  contract_number?: string;
+  company_code?: string; // Código de empresa para determinar credenciales Cobalt
 }
 
 export interface DatosYappy {

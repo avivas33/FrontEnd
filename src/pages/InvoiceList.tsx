@@ -10,10 +10,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import BillPayHeader from '@/components/BillPayHeader';
 import { PaymentHistoryModal } from '@/components/PaymentHistoryModal';
 import { DateRangeSearchModal } from '@/components/DateRangeSearchModal';
+import { CompanySelectionModal } from '@/components/CompanySelectionModal';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { clienteService, EmpresaProcesada } from '@/services';
 import * as XLSX from 'xlsx';
 import { formatDate, formatAmount } from '../lib/utils';
+import { getCompanyLogo } from '@/utils/companyLogos';
 
 interface Invoice {
   id: string;
@@ -27,6 +29,9 @@ interface Invoice {
   CompanyCode: string;
   CompanyName: string;
   CompanyShortName: string;
+  OrderNr?: string;
+  CustOrdNr?: string;
+  RefStr?: string;
 }
 
 interface LocationState {
@@ -52,6 +57,9 @@ const InvoiceList = () => {
   const [apiResponse, setApiResponse] = useState<any>(null);
   const [showPaymentHistory, setShowPaymentHistory] = useState(false);
   const [showDateRangeSearch, setShowDateRangeSearch] = useState(false);
+  const [showCompanySelection, setShowCompanySelection] = useState(false);
+  const [selectedCompany, setSelectedCompany] = useState<string | null>(null);
+  const [allInvoices, setAllInvoices] = useState<Invoice[]>([]);
   const isMobile = useIsMobile();
 
   const state = location.state as LocationState;
@@ -114,7 +122,7 @@ const InvoiceList = () => {
           });
         }
         
-        setInvoices(facturas.map((f: any) => ({
+        const mappedInvoices = facturas.map((f: any) => ({
           id: (f.SerNr || f.serNr) + '-' + (f.PayDate || f.payDate),
           SerNr: f.SerNr || f.serNr,
           OfficialSerNr: f.OfficialSerNr || f.officialSerNr,
@@ -126,7 +134,9 @@ const InvoiceList = () => {
           CompanyCode: f.CompanyCode || f.companyCode,
           CompanyName: f.CompanyName || f.companyName,
           CompanyShortName: f.CompanyShortName || f.companyShortName
-        })));
+        }));
+        
+        setAllInvoices(mappedInvoices);
         
         // Obtener empresas con resultados de la API
         const empresasConResultadosAPI = responseData.empresasConResultados || [];
@@ -147,11 +157,19 @@ const InvoiceList = () => {
         
         setEmpresasProcesadas(empresasConFacturas);
         
-        // Si solo hay una empresa con facturas, seleccionarla automáticamente
-        if (empresasConFacturas.length === 1) {
-          setEmpresaSeleccionada(empresasConFacturas[0].CompCode);
-        } else {
-          setEmpresaSeleccionada('todas');
+        // Si hay múltiples empresas con facturas, mostrar modal de selección
+        if (empresasConFacturas.length > 1 && !selectedCompany) {
+          setShowCompanySelection(true);
+        } else if (empresasConFacturas.length === 1) {
+          // Si solo hay una empresa, seleccionarla automáticamente
+          const companyCode = empresasConFacturas[0].CompCode;
+          setSelectedCompany(companyCode);
+          setEmpresaSeleccionada(companyCode);
+          // Filtrar facturas de esa empresa
+          setInvoices(mappedInvoices.filter(inv => inv.CompanyCode === companyCode));
+        } else if (selectedCompany) {
+          // Si ya hay una empresa seleccionada, filtrar por ella
+          setInvoices(mappedInvoices.filter(inv => inv.CompanyCode === selectedCompany));
         }
         
       } catch (error) {
@@ -313,7 +331,10 @@ const InvoiceList = () => {
         
         return {
           ...baseData,
-          'Forma de Pago': invoice.FormaPago,
+          'Orden': invoice.OrderNr || '',
+          'Orden Cliente': invoice.CustOrdNr || '',
+          'Referencia': invoice.RefStr || '',
+          'Términos de Pago': invoice.FormaPago,
           'Fecha Emisión': formatDate(invoice.InvDate),
           'Fecha Vto.': formatDate(invoice.PayDate),
           'Importe': formatAmount(invoice.Sum4),
@@ -339,40 +360,62 @@ const InvoiceList = () => {
       if (mostrarSelectorEmpresas && empresaSeleccionada === 'todas') {
         headers.push('Empresa');
       }
-      headers.push('Forma de Pago', 'Fecha Emisión', 'Fecha Vto.', 'Importe', 'Estado', 'PDF');
+      headers.push('Orden', 'Orden Cliente', 'Referencia', 'Términos de Pago', 'Fecha Emisión', 'Fecha Vto.', 'Importe', 'Estado');
       XLSX.utils.sheet_add_aoa(ws, [headers], { origin: 'A4' });
       
       // Agregar datos de facturas empezando desde la fila 5
-      const facturasArray = facturasData.map(factura => [
-        factura['#'],
-        factura['Nro. Doc'],
-        factura['Nro. CUFE'],
-        factura['Forma de Pago'],
-        factura['Fecha Emisión'],
-        factura['Fecha Vto.'],
-        factura['Importe'],
-        factura['Estado'],
-        factura['Nro. CUFE'] && factura['Nro. CUFE'].toString().trim() !== '' ? 'Disponible' : 'No disponible'
-      ]);
+      const facturasArray = facturasData.map(factura => {
+        const baseArray = [
+          factura['#'],
+          factura['Nro. Doc'],
+          factura['Nro. CUFE']
+        ];
+        
+        if (mostrarSelectorEmpresas && empresaSeleccionada === 'todas') {
+          baseArray.push(factura['Empresa']);
+        }
+        
+        return baseArray.concat([
+          factura['Orden'],
+          factura['Orden Cliente'],
+          factura['Referencia'],
+          factura['Términos de Pago'],
+          factura['Fecha Emisión'],
+          factura['Fecha Vto.'],
+          factura['Importe'],
+          factura['Estado']
+        ]);
+      });
       XLSX.utils.sheet_add_aoa(ws, facturasArray, { origin: 'A5' });
 
       // Configurar anchos de columnas
-      const colWidths = [
+      let colWidths = [
         { wch: 5 },   // #
         { wch: 15 },  // Nro. Doc
         { wch: 20 },  // Nro. CUFE
-        { wch: 15 },  // Forma de Pago
+      ];
+      
+      if (mostrarSelectorEmpresas && empresaSeleccionada === 'todas') {
+        colWidths.push({ wch: 15 }); // Empresa
+      }
+      
+      colWidths = colWidths.concat([
+        { wch: 15 },  // Orden
+        { wch: 20 },  // Orden Cliente
+        { wch: 20 },  // Referencia
+        { wch: 15 },  // Términos de Pago
         { wch: 15 },  // Fecha Emisión
         { wch: 15 },  // Fecha Vto.
         { wch: 15 },  // Importe
-        { wch: 10 },  // Estado
-        { wch: 12 }   // PDF
-      ];
+        { wch: 10 }   // Estado
+      ]);
       ws['!cols'] = colWidths;
 
-      // Combinar celdas para el título del cliente (A2:I2)
+      // Combinar celdas para el título del cliente
       if (!ws['!merges']) ws['!merges'] = [];
-      ws['!merges'].push({ s: { r: 1, c: 0 }, e: { r: 1, c: 8 } });
+      // Calcular el número de columnas según si se muestra empresa o no
+      const totalColumns = mostrarSelectorEmpresas && empresaSeleccionada === 'todas' ? 10 : 9;
+      ws['!merges'].push({ s: { r: 1, c: 0 }, e: { r: 1, c: totalColumns } });
 
       // Aplicar estilos al título del cliente (centrado y negrita)
       if (ws['A2']) {
@@ -460,7 +503,7 @@ const InvoiceList = () => {
           <TableHead>Nro. Doc</TableHead>
           <TableHead>Nro. CUFE</TableHead>
           <TableHead>Importe</TableHead>
-          <TableHead>Forma de Pago</TableHead>
+          <TableHead>Términos de Pago</TableHead>
           <TableHead>Fecha Emisión</TableHead>
           <TableHead>Fecha Vto.</TableHead>
           <TableHead className="text-center"></TableHead>
@@ -472,7 +515,7 @@ const InvoiceList = () => {
         <TableHead className="w-10"></TableHead>
         <TableHead>Nro. Doc</TableHead>
         <TableHead>Nro. CUFE</TableHead>
-        <TableHead>Forma de Pago</TableHead>
+        <TableHead>Términos de Pago</TableHead>
         <TableHead>Fecha Emisión</TableHead>
         <TableHead>Fecha Vto.</TableHead>
         <TableHead>Importe</TableHead>
@@ -613,43 +656,27 @@ const InvoiceList = () => {
     });
   };
 
-  // Filtrar facturas por empresa seleccionada
-  const facturasFiltradas = empresaSeleccionada === 'todas'
-    ? invoices
-    : invoices.filter(f => f.CompanyCode === empresaSeleccionada);
+  // Las facturas ya están filtradas por empresa seleccionada
+  const facturasFiltradas = invoices;
   
-  // Determinar si hay que mostrar selector de empresas
-  const mostrarSelectorEmpresas = empresasProcesadas.length > 1;
+  // No mostrar selector de empresas ya que se selecciona al inicio
+  const mostrarSelectorEmpresas = false;
   
-  // Limpiar selecciones cuando se cambia de empresa
-  useEffect(() => {
-    setSelectedInvoices([]);
-  }, [empresaSeleccionada]);
-
-  // Función para manejar facturas seleccionadas desde el modal de búsqueda
-  const handleInvoicesFromSearch = (selectedInvoicesList: Invoice[]) => {
-    // Agregar las facturas seleccionadas a la lista principal
-    setInvoices(prevInvoices => {
-      // Combinar facturas existentes con las nuevas, evitando duplicados
-      const existingIds = new Set(prevInvoices.map(inv => inv.id));
-      const newInvoices = selectedInvoicesList.filter(inv => !existingIds.has(inv.id));
-      return [...prevInvoices, ...newInvoices];
-    });
-    
-    // Seleccionar automáticamente las facturas que vienen del modal
-    setSelectedInvoices(prevSelected => {
-      const newSelected = selectedInvoicesList.map(inv => inv.id);
-      return [...new Set([...prevSelected, ...newSelected])];
-    });
-    
-    // Actualizar la empresa seleccionada si todas son de la misma empresa
-    const empresasEncontradas = [...new Set(selectedInvoicesList.map(inv => inv.CompanyCode))];
-    if (empresasEncontradas.length === 1) {
-      setEmpresaSeleccionada(empresasEncontradas[0]);
-    }
-    
-    toast.success(`Se agregaron ${selectedInvoicesList.length} facturas a la selección`);
+  // Función para manejar la selección de empresa
+  const handleCompanySelection = (companyCode: string) => {
+    setSelectedCompany(companyCode);
+    setEmpresaSeleccionada(companyCode);
+    // Filtrar facturas por la empresa seleccionada
+    setInvoices(allInvoices.filter(inv => inv.CompanyCode === companyCode));
+    setSelectedInvoices([]); // Limpiar selecciones
   };
+  
+  // Calcular facturas por empresa para el modal
+  const facturasPerEmpresa = empresasProcesadas.reduce((acc, empresa) => {
+    acc[empresa.CompCode] = allInvoices.filter(inv => inv.CompanyCode === empresa.CompCode).length;
+    return acc;
+  }, {} as Record<string, number>);
+
 
   // Función para manejar la búsqueda por rango de fechas (no usada ahora porque el modal maneja todo)
   const handleDateRangeSearch = async (startDate: string, endDate: string, empresaCode?: string) => {
@@ -680,7 +707,10 @@ const InvoiceList = () => {
           Sum4: f.Sum4 || f.sum4,
           CompanyCode: f.CompanyCode || f.companyCode,
           CompanyName: f.CompanyName || f.companyName,
-          CompanyShortName: f.CompanyShortName || f.companyShortName
+          CompanyShortName: f.CompanyShortName || f.companyShortName,
+          OrderNr: f.OrderNr || f.orderNr,
+          CustOrdNr: f.CustOrdNr || f.custOrdNr,
+          RefStr: f.RefStr || f.refStr
         })));
         
         // Actualizar la empresa seleccionada en el tab
@@ -712,7 +742,10 @@ const InvoiceList = () => {
           Sum4: f.Sum4 || f.sum4,
           CompanyCode: f.CompanyCode || f.companyCode,
           CompanyName: f.CompanyName || f.companyName,
-          CompanyShortName: f.CompanyShortName || f.companyShortName
+          CompanyShortName: f.CompanyShortName || f.companyShortName,
+          OrderNr: f.OrderNr || f.orderNr,
+          CustOrdNr: f.CustOrdNr || f.custOrdNr,
+          RefStr: f.RefStr || f.refStr
         })));
         
         // Mantener "todas" las empresas seleccionadas
@@ -744,7 +777,16 @@ const InvoiceList = () => {
           </button>
         </div>
         
-        <h1 className="text-2xl font-bold text-black mb-6">Seleccionar Facturas</h1>
+        <div className="flex justify-between items-center mb-6">
+          <h1 className="text-2xl font-bold text-black">Facturas Pendientes</h1>
+          {selectedCompany && (
+            <img 
+              src={getCompanyLogo(selectedCompany)} 
+              alt="Logo empresa" 
+              className="h-12 w-auto object-contain"
+            />
+          )}
+        </div>
 
         {/* Botón flotante para seleccionar vencidas */}
         <div className="relative">
@@ -777,64 +819,45 @@ const InvoiceList = () => {
             </div>
           </Card>
         ) : invoices.length > 0 ? (
-          <Card className="p-6 shadow-sm border-gray-100">
-            <div className="mb-6">
-              <div className="flex justify-between items-center mb-4">
-                <h2 className="text-xl text-black font-bold">Facturas pendientes</h2>
-                <div className="flex gap-2">
-                  <Button
-                    onClick={() => setShowDateRangeSearch(true)}
-                    variant="outline"
-                    size="sm"
-                    className="flex items-center gap-2 text-billpay-blue border-billpay-blue hover:bg-billpay-blue hover:text-white"
-                  >
-                    <Calendar className="h-4 w-4" />
-                    Buscar por Fecha
-                  </Button>
-                  <Button
-                    onClick={() => setShowPaymentHistory(true)}
-                    variant="outline"
-                    size="sm"
-                    className="flex items-center gap-2 text-billpay-blue border-billpay-blue hover:bg-billpay-blue hover:text-white"
-                  >
-                    <Receipt className="h-4 w-4" />
-                    Historial de Pagos
-                  </Button>
-                  <Button
-                    onClick={exportToExcel}
-                    variant="outline"
-                    size="sm"
-                    className="flex items-center gap-2 text-billpay-blue border-billpay-blue hover:bg-billpay-blue hover:text-white"
-                  >
-                    <Download className="h-4 w-4" />
-                    Exportar Excel
-                  </Button>
+          <>
+            <Card className="p-6 shadow-sm border-gray-100">
+              <div className="mb-6">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="text-black font-bold">Cliente: #{clientCode} - {clientName}</p>
+                    <p className="text-sm text-gray-500 mt-2">Seleccione una o más facturas para pagar</p>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={() => setShowDateRangeSearch(true)}
+                      variant="outline"
+                      size="sm"
+                      className="flex items-center gap-2 text-billpay-blue border-billpay-blue hover:bg-billpay-blue hover:text-white"
+                    >
+                      <Calendar className="h-4 w-4" />
+                      Ver Facturas
+                    </Button>
+                    <Button
+                      onClick={() => setShowPaymentHistory(true)}
+                      variant="outline"
+                      size="sm"
+                      className="flex items-center gap-2 text-billpay-blue border-billpay-blue hover:bg-billpay-blue hover:text-white"
+                    >
+                      <Receipt className="h-4 w-4" />
+                      Ver Recibos
+                    </Button>
+                    <Button
+                      onClick={exportToExcel}
+                      variant="outline"
+                      size="sm"
+                      className="flex items-center gap-2 text-billpay-blue border-billpay-blue hover:bg-billpay-blue hover:text-white"
+                    >
+                      <Download className="h-4 w-4" />
+                      Exportar Excel
+                    </Button>
+                  </div>
                 </div>
               </div>
-              <p className="text-black font-bold">Cliente: #{clientCode} - {clientName}</p>
-              <p className="text-sm text-gray-500 mt-2">Seleccione una o más facturas para pagar</p>
-              
-              {/* Selector de empresas - Solo se muestra si hay más de una empresa con resultados */}
-              {mostrarSelectorEmpresas && (
-                <div className="mt-4">
-                  <Tabs value={empresaSeleccionada} onValueChange={setEmpresaSeleccionada}>
-                    <TabsList className="grid w-full" style={{ gridTemplateColumns: `repeat(${empresasProcesadas.length + 1}, 1fr)` }}>
-                      <TabsTrigger value="todas">Todas</TabsTrigger>
-                      {empresasProcesadas.map((empresa) => {
-                        const hasError = apiResponse?.errores?.some((error: any) => error.compCode === empresa.CompCode);
-                        const facturaCount = invoices.filter(f => f.CompanyCode === empresa.CompCode).length;
-                        return (
-                          <TabsTrigger key={empresa.CompCode} value={empresa.CompCode} className={hasError ? 'text-red-600' : ''}>
-                            {empresa.CompName} ({facturaCount})
-                            {hasError && ' ⚠️'}
-                          </TabsTrigger>
-                        );
-                      })}
-                    </TabsList>
-                  </Tabs>
-                </div>
-              )}
-            </div>
             
             <div className="overflow-x-auto mb-6">
               <Table className="text-sm">
@@ -934,20 +957,61 @@ const InvoiceList = () => {
               </Button>
             </div>
           </Card>
+          </>
         ) : (
-          <Card className="p-6 text-center">
-            <p>No se encontraron facturas pendientes para este cliente.</p>
-            <Button 
-              onClick={() => navigate('/')}
-              className="mt-4 bg-billpay-blue"
-            >
-              Volver a buscar
-            </Button>
+          <>
+            <Card className="p-6 shadow-sm border-gray-100">
+              <div className="mb-6">
+                <div className="flex justify-between items-start">
+                  <div>
+                    <p className="text-black font-bold">Cliente: #{clientCode} - {clientName}</p>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={() => setShowDateRangeSearch(true)}
+                      variant="outline"
+                      size="sm"
+                      className="flex items-center gap-2 text-billpay-blue border-billpay-blue hover:bg-billpay-blue hover:text-white"
+                    >
+                      <Calendar className="h-4 w-4" />
+                      Ver Facturas
+                    </Button>
+                    <Button
+                      onClick={() => setShowPaymentHistory(true)}
+                      variant="outline"
+                      size="sm"
+                      className="flex items-center gap-2 text-billpay-blue border-billpay-blue hover:bg-billpay-blue hover:text-white"
+                    >
+                      <Receipt className="h-4 w-4" />
+                      Ver Recibos
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            
+            <div className="overflow-x-auto mb-6">
+              <Table className="text-sm">
+                <TableHeader>
+                  {renderTableHeaders()}
+                </TableHeader>
+                <TableBody>
+                  <TableRow>
+                    <TableCell 
+                      colSpan={8} 
+                      className="h-32 text-center text-gray-500"
+                    >
+                      No hay facturas para mostrar
+                    </TableCell>
+                  </TableRow>
+                </TableBody>
+              </Table>
+            </div>
           </Card>
+          </>
         )}
       </main>
 
-      {/* Modal de Historial de Pagos */}
+      {/* Modal de Ver Recibos */}
       <PaymentHistoryModal
         isOpen={showPaymentHistory}
         onClose={() => setShowPaymentHistory(false)}
@@ -959,10 +1023,21 @@ const InvoiceList = () => {
       <DateRangeSearchModal
         isOpen={showDateRangeSearch}
         onClose={() => setShowDateRangeSearch(false)}
-        onSelectInvoices={handleInvoicesFromSearch}
         clientCode={clientCode}
         clientName={clientName}
         empresasDisponibles={empresasProcesadas}
+        empresaSeleccionada={empresaSeleccionada}
+      />
+      
+      {/* Modal de Selección de Empresa */}
+      <CompanySelectionModal
+        isOpen={showCompanySelection}
+        onClose={() => setShowCompanySelection(false)}
+        onSelectCompany={handleCompanySelection}
+        empresas={empresasProcesadas}
+        facturasPerEmpresa={facturasPerEmpresa}
+        clientName={clientName}
+        clientCode={clientCode}
       />
     </div>
   );

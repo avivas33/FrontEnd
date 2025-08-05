@@ -1,15 +1,15 @@
-import { useState } from 'react';
-import { X, Upload, FileText, Image, Trash2, Check } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { X, Upload, FileText, Image, Trash2 } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
-import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { toast } from 'sonner';
 import { formatDate, formatAmount } from '../lib/utils';
+import { achService, ACHInstructions } from '../services/achService';
 
 interface ACHFile {
   id: string;
@@ -45,19 +45,29 @@ interface ACHPaymentModalProps {
 }
 
 export function ACHPaymentModal({ isOpen, onClose, invoices, totalAmount, onConfirm }: ACHPaymentModalProps) {
-  const [uploadMode, setUploadMode] = useState<'global' | 'individual'>('global');
+  // Siempre usar modo global (removida opción individual)
+  const uploadMode = 'global';
   const [files, setFiles] = useState<ACHFile[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [achInstructions, setAchInstructions] = useState<ACHInstructions | null>(null);
   
   // Campos adicionales para el pago ACH
   const [numeroTransaccion, setNumeroTransaccion] = useState('');
   const [fechaTransaccion, setFechaTransaccion] = useState(new Date().toISOString().slice(0, 10));
   const [observaciones, setObservaciones] = useState('');
 
+  // Cargar instrucciones ACH al abrir el modal
+  useEffect(() => {
+    if (isOpen) {
+      achService.getACHInstructions().then(instructions => {
+        setAchInstructions(instructions);
+      });
+    }
+  }, [isOpen]);
+
   // Limpiar al cerrar
   const handleClose = () => {
     setFiles([]);
-    setUploadMode('global');
     setNumeroTransaccion('');
     setFechaTransaccion(new Date().toISOString().slice(0, 10));
     setObservaciones('');
@@ -86,8 +96,8 @@ export function ACHPaymentModal({ isOpen, onClose, invoices, totalAmount, onConf
       const newFile: ACHFile = {
         id: Math.random().toString(36).substr(2, 9),
         file,
-        invoiceId: uploadMode === 'individual' ? invoiceId : undefined,
-        isGlobal: uploadMode === 'global'
+        invoiceId: undefined,
+        isGlobal: true
       };
 
       // Crear preview para imágenes
@@ -112,9 +122,9 @@ export function ACHPaymentModal({ isOpen, onClose, invoices, totalAmount, onConf
     setFiles(prev => prev.filter(f => f.id !== fileId));
   };
 
-  // Verificar si una factura tiene comprobante
-  const hasComprobante = (invoiceId: string) => {
-    return files.some(f => f.invoiceId === invoiceId) || (uploadMode === 'global' && files.some(f => f.isGlobal));
+  // Verificar si hay comprobante global
+  const hasComprobante = () => {
+    return files.some(f => f.isGlobal);
   };
 
   // Procesar pago
@@ -137,14 +147,6 @@ export function ACHPaymentModal({ isOpen, onClose, invoices, totalAmount, onConf
       return;
     }
 
-    // Si es individual, validar que todas las facturas tengan comprobante
-    if (uploadMode === 'individual') {
-      const facturasConComprobante = invoices.filter(inv => hasComprobante(inv.invoiceNumber));
-      if (facturasConComprobante.length < invoices.length) {
-        toast.error('Todas las facturas deben tener un comprobante');
-        return;
-      }
-    }
 
     setIsProcessing(true);
     try {
@@ -169,17 +171,7 @@ export function ACHPaymentModal({ isOpen, onClose, invoices, totalAmount, onConf
     <Dialog open={isOpen} onOpenChange={handleClose}>
       <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle className="flex items-center justify-between">
-            <span>Pago por ACH</span>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleClose}
-              className="h-8 w-8 p-0"
-            >
-              <X className="h-4 w-4" />
-            </Button>
-          </DialogTitle>
+          <DialogTitle>Pago por ACH</DialogTitle>
         </DialogHeader>
 
         <div className="space-y-6">
@@ -194,7 +186,6 @@ export function ACHPaymentModal({ isOpen, onClose, invoices, totalAmount, onConf
                     <TableHead>Fecha</TableHead>
                     <TableHead>Vencimiento</TableHead>
                     <TableHead className="text-right">Monto</TableHead>
-                    {uploadMode === 'individual' && <TableHead>Comprobante</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -206,30 +197,6 @@ export function ACHPaymentModal({ isOpen, onClose, invoices, totalAmount, onConf
                       <TableCell className="text-right font-medium">
                         {formatAmount(invoice.amount.toString())}
                       </TableCell>
-                      {uploadMode === 'individual' && (
-                        <TableCell>
-                          <div className="flex items-center gap-2">
-                            {hasComprobante(invoice.invoiceNumber) ? (
-                              <Check className="h-4 w-4 text-green-600" />
-                            ) : (
-                              <Label htmlFor={`file-${invoice.invoiceNumber}`} className="cursor-pointer">
-                                <div className="flex items-center gap-2 text-blue-600 hover:text-blue-700">
-                                  <Upload className="h-4 w-4" />
-                                  <span className="text-sm">Subir</span>
-                                </div>
-                                <input
-                                  id={`file-${invoice.invoiceNumber}`}
-                                  type="file"
-                                  multiple
-                                  accept=".pdf,.png,.jpg,.jpeg"
-                                  className="hidden"
-                                  onChange={(e) => handleFileUpload(e, invoice.invoiceNumber)}
-                                />
-                              </Label>
-                            )}
-                          </div>
-                        </TableCell>
-                      )}
                     </TableRow>
                   ))}
                 </TableBody>
@@ -241,31 +208,8 @@ export function ACHPaymentModal({ isOpen, onClose, invoices, totalAmount, onConf
             </Card>
           </div>
 
-          {/* Tipo de comprobante */}
-          <div>
-            <h3 className="text-lg font-semibold mb-3">Tipo de comprobante</h3>
-            <RadioGroup value={uploadMode} onValueChange={(value: 'global' | 'individual') => {
-              setUploadMode(value);
-              setFiles([]); // Limpiar archivos al cambiar modo
-            }}>
-              <div className="flex items-center space-x-2 mb-2">
-                <RadioGroupItem value="global" id="global" />
-                <Label htmlFor="global" className="cursor-pointer">
-                  Comprobante global (un comprobante para todas las facturas)
-                </Label>
-              </div>
-              <div className="flex items-center space-x-2">
-                <RadioGroupItem value="individual" id="individual" />
-                <Label htmlFor="individual" className="cursor-pointer">
-                  Comprobante individual (un comprobante por cada factura)
-                </Label>
-              </div>
-            </RadioGroup>
-          </div>
-
           {/* Subir comprobante global */}
-          {uploadMode === 'global' && (
-            <div>
+          <div>
               <h3 className="text-lg font-semibold mb-3">Subir comprobante</h3>
               <Card className="p-4">
                 <Label htmlFor="global-file" className="cursor-pointer">
@@ -289,7 +233,6 @@ export function ACHPaymentModal({ isOpen, onClose, invoices, totalAmount, onConf
                 </Label>
               </Card>
             </div>
-          )}
 
           {/* Archivos subidos */}
           {files.length > 0 && (
@@ -311,7 +254,6 @@ export function ACHPaymentModal({ isOpen, onClose, invoices, totalAmount, onConf
                           <p className="text-sm font-medium">{file.file.name}</p>
                           <p className="text-xs text-gray-500">
                             {(file.file.size / 1024 / 1024).toFixed(2)} MB
-                            {file.invoiceId && ` - Factura ${file.invoiceId}`}
                           </p>
                         </div>
                       </div>
@@ -370,22 +312,22 @@ export function ACHPaymentModal({ isOpen, onClose, invoices, totalAmount, onConf
           </div>
 
           {/* Instrucciones ACH */}
-          <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-            <h4 className="font-semibold text-blue-900 mb-2">Instrucciones para pago ACH:</h4>
-            <ol className="list-decimal list-inside space-y-1 text-sm text-blue-800">
-              <li>Realice la transferencia ACH a la cuenta bancaria de Celero</li>
-              <li>Tome una captura o foto del comprobante de transferencia</li>
-              <li>Complete los datos de la transacción arriba</li>
-              <li>Suba el comprobante usando el botón de arriba</li>
-              <li>Confirme el pago para completar el proceso</li>
-            </ol>
-            <div className="mt-3 pt-3 border-t border-blue-200">
-              <p className="text-sm font-semibold text-blue-900">Datos bancarios:</p>
-              <p className="text-sm text-blue-800">Banco: Banco General</p>
-              <p className="text-sm text-blue-800">Cuenta: 03-01-01-123456-7</p>
-              <p className="text-sm text-blue-800">Beneficiario: CELERO S.A.</p>
+          {achInstructions && (
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+              <h4 className="font-semibold text-blue-900 mb-2">{achInstructions.title}</h4>
+              <ol className="list-decimal list-inside space-y-1 text-sm text-blue-800">
+                {achInstructions.steps.map((step, index) => (
+                  <li key={index}>{step}</li>
+                ))}
+              </ol>
+              <div className="mt-3 pt-3 border-t border-blue-200">
+                <p className="text-sm font-semibold text-blue-900">{achInstructions.bankDetails.title}</p>
+                <p className="text-sm text-blue-800">Banco: {achInstructions.bankDetails.bank}</p>
+                <p className="text-sm text-blue-800">Cuenta: {achInstructions.bankDetails.accountNumber}</p>
+                <p className="text-sm text-blue-800">Beneficiario: {achInstructions.bankDetails.beneficiary}</p>
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Botones de acción */}
           <div className="flex justify-end gap-3 pt-4 border-t">
