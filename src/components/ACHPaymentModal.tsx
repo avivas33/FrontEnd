@@ -1,15 +1,18 @@
 import { useState, useEffect } from 'react';
-import { X, Upload, FileText, Image, Trash2 } from 'lucide-react';
+import { X, Upload, FileText, Image, Trash2, ChevronDown, ChevronUp } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { toast } from 'sonner';
 import { formatDate, formatAmount } from '../lib/utils';
 import { achService, ACHInstructions } from '../services/achService';
+import { useIsMobile } from '@/hooks/use-mobile';
+import { useActivityTracking } from '@/hooks/useActivityTracking';
 
 interface ACHFile {
   id: string;
@@ -45,11 +48,21 @@ interface ACHPaymentModalProps {
 }
 
 export function ACHPaymentModal({ isOpen, onClose, invoices, totalAmount, onConfirm }: ACHPaymentModalProps) {
+  const isMobile = useIsMobile();
+  const { trackPaymentAttempt, trackPaymentSuccess, trackPaymentFailed } = useActivityTracking();
+  
   // Siempre usar modo global (removida opción individual)
   const uploadMode = 'global';
   const [files, setFiles] = useState<ACHFile[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [achInstructions, setAchInstructions] = useState<ACHInstructions | null>(null);
+  
+  // Estados para secciones colapsables en móvil
+  const [sectionsExpanded, setSectionsExpanded] = useState({
+    instructions: !isMobile,
+    files: true,
+    invoices: !isMobile,
+  });
   
   // Campos adicionales para el pago ACH
   const [numeroTransaccion, setNumeroTransaccion] = useState('');
@@ -59,11 +72,22 @@ export function ACHPaymentModal({ isOpen, onClose, invoices, totalAmount, onConf
   // Cargar instrucciones ACH al abrir el modal
   useEffect(() => {
     if (isOpen) {
-      achService.getACHInstructions().then(instructions => {
+      // Obtener el código de empresa de las facturas (todas deberían tener el mismo)
+      const companyCode = invoices[0]?.empresaCode || '2'; // Por defecto empresa 2
+      achService.getACHInstructions(companyCode).then(instructions => {
         setAchInstructions(instructions);
       });
     }
-  }, [isOpen]);
+  }, [isOpen, invoices]);
+
+  // Actualizar secciones expandidas cuando cambie el modo móvil
+  useEffect(() => {
+    setSectionsExpanded({
+      instructions: !isMobile,
+      files: true,
+      invoices: !isMobile,
+    });
+  }, [isMobile]);
 
   // Limpiar al cerrar
   const handleClose = () => {
@@ -149,6 +173,10 @@ export function ACHPaymentModal({ isOpen, onClose, invoices, totalAmount, onConf
 
 
     setIsProcessing(true);
+    
+    // Track payment attempt
+    await trackPaymentAttempt('ach', totalAmount, 'USD');
+    
     try {
       // Agregar datos de transacción a los archivos
       const filesWithData = files.map(file => ({
@@ -159,8 +187,14 @@ export function ACHPaymentModal({ isOpen, onClose, invoices, totalAmount, onConf
       }));
       
       await onConfirm(filesWithData);
+      
+      // Track successful ACH submission
+      await trackPaymentSuccess('ach', totalAmount, 'USD', numeroTransaccion);
+      
       handleClose();
     } catch (error) {
+      // Track failed ACH submission
+      await trackPaymentFailed('ach', totalAmount, 'USD', 'SUBMISSION_FAILED');
       toast.error('Error al procesar el pago');
     } finally {
       setIsProcessing(false);
@@ -169,56 +203,92 @@ export function ACHPaymentModal({ isOpen, onClose, invoices, totalAmount, onConf
 
   return (
     <Dialog open={isOpen} onOpenChange={handleClose}>
-      <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Pago por ACH</DialogTitle>
+      <DialogContent className={`${isMobile ? 'max-w-[95vw] w-[95vw] max-h-[95vh] p-3' : 'max-w-3xl max-h-[85vh]'} overflow-y-auto`}>
+        <DialogHeader className={isMobile ? 'pb-2' : ''}>
+          <DialogTitle className={isMobile ? 'text-lg' : ''}>Pago por ACH</DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-6">
+        <div className={isMobile ? 'space-y-3' : 'space-y-4'}>
           {/* Resumen de facturas */}
-          <div>
-            <h3 className="text-lg font-semibold mb-3">Resumen de facturas</h3>
-            <Card className="p-4">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Factura</TableHead>
-                    <TableHead>Fecha</TableHead>
-                    <TableHead>Vencimiento</TableHead>
-                    <TableHead className="text-right">Monto</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {invoices.map((invoice) => (
-                    <TableRow key={invoice.invoiceNumber}>
-                      <TableCell>{invoice.invoiceNumber}</TableCell>
-                      <TableCell>{formatDate(invoice.invDate)}</TableCell>
-                      <TableCell>{formatDate(invoice.dueDate)}</TableCell>
-                      <TableCell className="text-right font-medium">
-                        {formatAmount(invoice.amount.toString())}
-                      </TableCell>
+          {isMobile ? (
+            <Collapsible
+              open={sectionsExpanded.invoices}
+              onOpenChange={(open) => setSectionsExpanded(prev => ({ ...prev, invoices: open }))}
+            >
+              <CollapsibleTrigger asChild>
+                <Button variant="outline" className="w-full justify-between h-10 text-sm">
+                  <span className="font-medium">Facturas ({invoices.length})</span>
+                  {sectionsExpanded.invoices ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                </Button>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="mt-2">
+                <Card className="p-2">
+                  <div className="space-y-2">
+                    {invoices.map((invoice) => (
+                      <div key={invoice.invoiceNumber} className="border-b pb-2 last:border-b-0">
+                        <div className="flex justify-between items-start">
+                          <div className="min-w-0 flex-1">
+                            <p className="font-medium text-sm truncate">{invoice.invoiceNumber}</p>
+                            <p className="text-xs text-gray-500">Fecha: {formatDate(invoice.invDate)}</p>
+                            <p className="text-xs text-gray-500">Vence: {formatDate(invoice.dueDate)}</p>
+                          </div>
+                          <p className="font-bold text-sm ml-2">{formatAmount(invoice.amount.toString())}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-2 pt-2 border-t flex justify-between items-center">
+                    <span className="font-medium text-sm">Total:</span>
+                    <span className="text-lg font-bold text-billpay-blue">{formatAmount(totalAmount.toString())}</span>
+                  </div>
+                </Card>
+              </CollapsibleContent>
+            </Collapsible>
+          ) : (
+            <div>
+              <h3 className="text-base font-semibold mb-2">Resumen de facturas</h3>
+              <Card className="p-3">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="text-sm">Factura</TableHead>
+                      <TableHead className="text-sm">Fecha</TableHead>
+                      <TableHead className="text-sm">Vencimiento</TableHead>
+                      <TableHead className="text-right text-sm">Monto</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-              <div className="mt-4 pt-4 border-t flex justify-between items-center">
-                <span className="font-semibold">Total a pagar:</span>
-                <span className="text-xl font-bold">{formatAmount(totalAmount.toString())}</span>
-              </div>
-            </Card>
-          </div>
+                  </TableHeader>
+                  <TableBody>
+                    {invoices.map((invoice) => (
+                      <TableRow key={invoice.invoiceNumber}>
+                        <TableCell className="text-sm">{invoice.invoiceNumber}</TableCell>
+                        <TableCell className="text-sm">{formatDate(invoice.invDate)}</TableCell>
+                        <TableCell className="text-sm">{formatDate(invoice.dueDate)}</TableCell>
+                        <TableCell className="text-right font-medium text-sm">
+                          {formatAmount(invoice.amount.toString())}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+                <div className="mt-3 pt-3 border-t flex justify-between items-center">
+                  <span className="font-semibold">Total a pagar:</span>
+                  <span className="text-lg font-bold">{formatAmount(totalAmount.toString())}</span>
+                </div>
+              </Card>
+            </div>
+          )}
 
           {/* Subir comprobante global */}
           <div>
-              <h3 className="text-lg font-semibold mb-3">Subir comprobante</h3>
-              <Card className="p-4">
+              <h3 className={`${isMobile ? 'text-base' : 'text-base'} font-semibold ${isMobile ? 'mb-2' : 'mb-2'}`}>Subir comprobante</h3>
+              <Card className={isMobile ? 'p-2' : 'p-3'}>
                 <Label htmlFor="global-file" className="cursor-pointer">
-                  <div className="border-2 border-dashed border-gray-300 rounded-lg p-6 text-center hover:border-gray-400 transition-colors">
-                    <Upload className="h-8 w-8 mx-auto mb-2 text-gray-400" />
-                    <p className="text-sm text-gray-600">
-                      Arrastra archivos aquí o haz clic para seleccionar
+                  <div className={`border-2 border-dashed border-gray-300 rounded-lg ${isMobile ? 'p-3' : 'p-4'} text-center hover:border-gray-400 transition-colors`}>
+                    <Upload className={`${isMobile ? 'h-5 w-5' : 'h-6 w-6'} mx-auto ${isMobile ? 'mb-1' : 'mb-2'} text-gray-400`} />
+                    <p className={`${isMobile ? 'text-xs' : 'text-sm'} text-gray-600`}>
+                      {isMobile ? 'Toca para seleccionar' : 'Arrastra archivos aquí o haz clic para seleccionar'}
                     </p>
-                    <p className="text-xs text-gray-500 mt-1">
+                    <p className={`text-xs text-gray-500 ${isMobile ? 'mt-0.5' : 'mt-1'}`}>
                       PDF, PNG, JPG (máx. 10MB)
                     </p>
                   </div>
@@ -237,22 +307,28 @@ export function ACHPaymentModal({ isOpen, onClose, invoices, totalAmount, onConf
           {/* Archivos subidos */}
           {files.length > 0 && (
             <div>
-              <h3 className="text-lg font-semibold mb-3">Archivos subidos</h3>
-              <div className="space-y-2">
+              <h3 className={`${isMobile ? 'text-base' : 'text-base'} font-semibold ${isMobile ? 'mb-2' : 'mb-2'}`}>Archivos subidos</h3>
+              <div className={isMobile ? 'space-y-1' : 'space-y-2'}>
                 {files.map((file) => (
-                  <Card key={file.id} className="p-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3">
+                  <Card key={file.id} className={isMobile ? 'p-2' : 'p-3'}>
+                    <div className={`flex items-center justify-between ${isMobile ? 'gap-2' : 'gap-3'}`}>
+                      <div className={`flex items-center ${isMobile ? 'gap-2' : 'gap-3'} flex-1 min-w-0`}>
                         {file.preview ? (
-                          <img src={file.preview} alt={file.file.name} className="h-10 w-10 object-cover rounded" />
+                          <img 
+                            src={file.preview} 
+                            alt={file.file.name} 
+                            className={`${isMobile ? 'h-6 w-6' : 'h-8 w-8'} object-cover rounded flex-shrink-0`} 
+                          />
                         ) : file.file.type === 'application/pdf' ? (
-                          <FileText className="h-10 w-10 text-red-500" />
+                          <FileText className={`${isMobile ? 'h-6 w-6' : 'h-8 w-8'} text-red-500 flex-shrink-0`} />
                         ) : (
-                          <Image className="h-10 w-10 text-blue-500" />
+                          <Image className={`${isMobile ? 'h-6 w-6' : 'h-8 w-8'} text-blue-500 flex-shrink-0`} />
                         )}
-                        <div>
-                          <p className="text-sm font-medium">{file.file.name}</p>
-                          <p className="text-xs text-gray-500">
+                        <div className="min-w-0 flex-1">
+                          <p className={`${isMobile ? 'text-xs' : 'text-sm'} font-medium truncate`}>
+                            {file.file.name}
+                          </p>
+                          <p className={`text-xs text-gray-500`}>
                             {(file.file.size / 1024 / 1024).toFixed(2)} MB
                           </p>
                         </div>
@@ -261,9 +337,9 @@ export function ACHPaymentModal({ isOpen, onClose, invoices, totalAmount, onConf
                         variant="ghost"
                         size="sm"
                         onClick={() => handleRemoveFile(file.id)}
-                        className="text-red-600 hover:text-red-700"
+                        className={`text-red-600 hover:text-red-700 flex-shrink-0 ${isMobile ? 'h-6 w-6 p-1' : ''}`}
                       >
-                        <Trash2 className="h-4 w-4" />
+                        <Trash2 className={isMobile ? 'h-3 w-3' : 'h-4 w-4'} />
                       </Button>
                     </div>
                   </Card>
@@ -274,38 +350,40 @@ export function ACHPaymentModal({ isOpen, onClose, invoices, totalAmount, onConf
 
           {/* Datos de la transacción */}
           <div>
-            <h3 className="text-lg font-semibold mb-3">Datos de la transacción</h3>
-            <Card className="p-4">
-              <div className="grid grid-cols-2 gap-4">
+            <h3 className={`${isMobile ? 'text-base' : 'text-base'} font-semibold ${isMobile ? 'mb-2' : 'mb-2'}`}>Datos de la transacción</h3>
+            <Card className={isMobile ? 'p-2' : 'p-3'}>
+              <div className={`grid ${isMobile ? 'grid-cols-1' : 'grid-cols-2'} ${isMobile ? 'gap-2' : 'gap-3'}`}>
                 <div>
-                  <Label htmlFor="numeroTransaccion">Número de transacción *</Label>
+                  <Label htmlFor="numeroTransaccion" className={isMobile ? 'text-sm' : ''}>Número de transacción</Label>
                   <Input
                     id="numeroTransaccion"
                     placeholder="Ej: TXN123456789"
                     value={numeroTransaccion}
                     onChange={(e) => setNumeroTransaccion(e.target.value)}
-                    required
+                    className={`${isMobile ? 'text-sm h-9 mt-1' : 'text-base'}`}
                   />
                 </div>
                 <div>
-                  <Label htmlFor="fechaTransaccion">Fecha de transacción *</Label>
+                  <Label htmlFor="fechaTransaccion" className={isMobile ? 'text-sm' : ''}>Fecha de transacción *</Label>
                   <Input
                     id="fechaTransaccion"
                     type="date"
                     value={fechaTransaccion}
                     onChange={(e) => setFechaTransaccion(e.target.value)}
                     required
+                    className={`${isMobile ? 'text-sm h-9 mt-1' : 'text-base'}`}
                   />
                 </div>
               </div>
-              <div className="mt-4">
-                <Label htmlFor="observaciones">Observaciones</Label>
+              <div className={isMobile ? 'mt-2' : 'mt-3'}>
+                <Label htmlFor="observaciones" className={isMobile ? 'text-sm' : ''}>Observaciones</Label>
                 <Textarea
                   id="observaciones"
                   placeholder="Información adicional sobre el pago (opcional)"
                   value={observaciones}
                   onChange={(e) => setObservaciones(e.target.value)}
-                  rows={3}
+                  rows={isMobile ? 2 : 2}
+                  className={`${isMobile ? 'text-sm mt-1' : 'text-base'}`}
                 />
               </div>
             </Card>
@@ -313,31 +391,76 @@ export function ACHPaymentModal({ isOpen, onClose, invoices, totalAmount, onConf
 
           {/* Instrucciones ACH */}
           {achInstructions && (
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-              <h4 className="font-semibold text-blue-900 mb-2">{achInstructions.title}</h4>
-              <ol className="list-decimal list-inside space-y-1 text-sm text-blue-800">
-                {achInstructions.steps.map((step, index) => (
-                  <li key={index}>{step}</li>
-                ))}
-              </ol>
-              <div className="mt-3 pt-3 border-t border-blue-200">
-                <p className="text-sm font-semibold text-blue-900">{achInstructions.bankDetails.title}</p>
-                <p className="text-sm text-blue-800">Banco: {achInstructions.bankDetails.bank}</p>
-                <p className="text-sm text-blue-800">Cuenta: {achInstructions.bankDetails.accountNumber}</p>
-                <p className="text-sm text-blue-800">Beneficiario: {achInstructions.bankDetails.beneficiary}</p>
+            isMobile ? (
+              <Collapsible
+                open={sectionsExpanded.instructions}
+                onOpenChange={(open) => setSectionsExpanded(prev => ({ ...prev, instructions: open }))}
+              >
+                <CollapsibleTrigger asChild>
+                  <Button variant="outline" className="w-full justify-between h-10 text-sm">
+                    <span className="font-medium">Instrucciones ACH</span>
+                    {sectionsExpanded.instructions ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                  </Button>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="mt-2">
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-2">
+                    <h4 className="font-medium text-blue-900 mb-1 text-sm">{achInstructions.title}</h4>
+                    <ol className="list-decimal list-inside space-y-0.5 text-xs text-blue-800">
+                      {achInstructions.steps.map((step, index) => (
+                        <li key={index}>{step}</li>
+                      ))}
+                    </ol>
+                    <div className="mt-2 pt-2 border-t border-blue-200">
+                      <p className="text-xs font-medium text-blue-900 mb-1">{achInstructions.bankDetails.title}</p>
+                      {achInstructions.bankDetails.banks.map((bank, index) => (
+                        <div key={index} className="mb-2 last:mb-0">
+                          <p className="text-xs text-blue-800 font-medium">{bank.bank}</p>
+                          <p className="text-xs text-blue-800">Beneficiario: {bank.beneficiary}</p>
+                          <p className="text-xs text-blue-800">Cuenta: {bank.accountNumber}</p>
+                          <p className="text-xs text-blue-800">Tipo: {bank.accountType}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            ) : (
+              <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                <h4 className="font-semibold text-blue-900 mb-2 text-sm">{achInstructions.title}</h4>
+                <ol className="list-decimal list-inside space-y-1 text-sm text-blue-800">
+                  {achInstructions.steps.map((step, index) => (
+                    <li key={index}>{step}</li>
+                  ))}
+                </ol>
+                <div className="mt-2 pt-2 border-t border-blue-200">
+                  <p className="text-sm font-semibold text-blue-900 mb-2">{achInstructions.bankDetails.title}</p>
+                  {achInstructions.bankDetails.banks.map((bank, index) => (
+                    <div key={index} className="mb-3 last:mb-0">
+                      <p className="text-sm text-blue-800 font-medium">{bank.bank}</p>
+                      <p className="text-sm text-blue-800">Beneficiario: {bank.beneficiary}</p>
+                      <p className="text-sm text-blue-800">Cuenta: {bank.accountNumber}</p>
+                      <p className="text-sm text-blue-800">Tipo: {bank.accountType}</p>
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
+            )
           )}
 
           {/* Botones de acción */}
-          <div className="flex justify-end gap-3 pt-4 border-t">
-            <Button variant="outline" onClick={handleClose} disabled={isProcessing}>
+          <div className={`flex ${isMobile ? 'flex-col' : 'justify-end'} ${isMobile ? 'gap-2' : 'gap-3'} ${isMobile ? 'pt-2' : 'pt-3'} border-t`}>
+            <Button 
+              variant="outline" 
+              onClick={handleClose} 
+              disabled={isProcessing}
+              className={isMobile ? 'w-full h-10 text-sm' : ''}
+            >
               Cancelar
             </Button>
             <Button 
               onClick={handleConfirm} 
               disabled={isProcessing || files.length === 0}
-              className="bg-billpay-blue hover:bg-billpay-blue/90"
+              className={`bg-billpay-blue hover:bg-billpay-blue/90 ${isMobile ? 'w-full h-10 text-sm' : ''}`}
             >
               {isProcessing ? 'Procesando...' : 'Confirmar Pago ACH'}
             </Button>

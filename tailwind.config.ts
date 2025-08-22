@@ -64,7 +64,7 @@ export default {
 					ring: 'hsl(var(--sidebar-ring))'
 				},
 				billpay: {
-					blue: '#003a7e',
+					blue: '#000000',
 					lightblue: '#e9f0fa',
 					cyan: '#30c8d6'
 				}

@@ -32,7 +32,7 @@ export function useApi<T>(
     } finally {
       setLoading(false);
     }
-  }, dependencies);
+  }, [apiCall, ...dependencies]);
 
   useEffect(() => {
     executeCall();

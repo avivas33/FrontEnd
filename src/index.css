@@ -100,6 +100,25 @@
   }
 }
 
+/* Estilos específicos para el modal de historial de pagos */
+@media (min-width: 768px) {
+  /* Asegurar que el contenedor de facturas tenga scroll */
+  .payment-history-content {
+    overflow-y: auto !important;
+    flex: 1 1 auto !important;
+    min-height: 0 !important;
+    height: 100% !important;
+  }
+  
+  /* Forzar altura del modal dialog específicamente para historial de pagos */
+  .payment-history-dialog {
+    height: 80vh !important;
+    max-height: 80vh !important;
+    display: flex !important;
+    flex-direction: column !important;
+  }
+}
+
 /* Estilos para vista móvil por defecto */
 body {
   margin: 0;

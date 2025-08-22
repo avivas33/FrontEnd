@@ -16,6 +16,10 @@ export interface DatosTarjeta {
   description?: string;
   contract_number?: string;
   company_code?: string; // Código de empresa para determinar credenciales Cobalt
+  InvoiceDetails?: Array<{
+    InvoiceNumber: string;
+    Amount: number;
+  }>;
 }
 
 export interface DatosYappy {
@@ -30,6 +34,16 @@ export interface DatosYappy {
   total: string;
 }
 
+export interface YappyFrontendRequest {
+  yappyPhone: string;
+  clienteCode: string;
+  emailCliente: string;
+  invoiceDetails: Array<{
+    invoiceNumber: string;
+    amount: number;
+  }>;
+}
+
 export interface ReciboData {
   serNr: string;
   transDate: string;
@@ -37,6 +51,7 @@ export interface ReciboData {
   person: string;
   cuCode: string;
   refStr: string;
+  email?: string; // Campo opcional para el email del cliente
   detalles: Array<{
     invoiceNr: string;
     sum: string;
@@ -55,6 +70,10 @@ export interface PayPalCreateOrderRequest {
   cancelUrl: string;
   emailCliente?: string;
   nombreCliente?: string;
+  invoiceDetails?: Array<{
+    invoiceNumber: string;
+    amount: number;
+  }>;
 }
 
 export interface PayPalCreateOrderResponse {
@@ -71,6 +90,11 @@ export interface PayPalCaptureRequest {
   orderId: string;
   clienteCode: string;
   numeroFactura: string;
+  emailCliente?: string;
+  invoiceDetails?: Array<{
+    invoiceNumber: string;
+    amount: number;
+  }>;
 }
 
 export class PagoService {
@@ -95,6 +119,18 @@ export class PagoService {
       return await apiClient.post('/api/clientes/yappy/crear-orden', data);
     } catch (error) {
       console.error('Error al crear orden Yappy:', error);
+      throw new Error('No se pudo crear la orden de pago Yappy');
+    }
+  }
+
+  /**
+   * Crear orden de pago Yappy con detalles de facturas (frontend)
+   */
+  async crearOrdenYappyFrontend(data: YappyFrontendRequest): Promise<any> {
+    try {
+      return await apiClient.post('/api/clientes/yappy/crear-orden-frontend', data);
+    } catch (error) {
+      console.error('Error al crear orden Yappy frontend:', error);
       throw new Error('No se pudo crear la orden de pago Yappy');
     }
   }
@@ -146,8 +182,26 @@ export class PagoService {
   async capturarPagoPayPal(data: PayPalCaptureRequest): Promise<any> {
     try {
       return await apiClient.post('/api/clientes/paypal/capture-payment', data);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error al capturar pago PayPal:', error);
+      
+      // Verificar si el error es porque la orden ya fue capturada
+      if (error.response?.data?.errorCode === 'UNPROCESSABLE_ENTITY' && 
+          error.response?.data?.message?.includes('Order already captured')) {
+        console.log('PayPal order already captured, treating as success');
+        
+        // Tratar como éxito pero indicar que ya estaba capturada
+        return {
+          success: true,
+          message: 'Pago PayPal ya procesado exitosamente',
+          data: {
+            transactionId: data.orderId,
+            receiptNumber: 'PENDING', // Se asignará después del registro en ERP
+            alreadyCaptured: true
+          }
+        };
+      }
+      
       throw new Error('No se pudo capturar el pago PayPal');
     }
   }

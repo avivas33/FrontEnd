@@ -1,6 +1,6 @@
 // Configuración centralizada de la API
 export const API_CONFIG = {
-  BASE_URL: import.meta.env.VITE_API_BASE_URL || 'https://api.celero.network',
+  BASE_URL: import.meta.env.DEV ? '' : (import.meta.env.VITE_API_BASE_URL || 'https://api.celero.network'),
   TIMEOUT: 30000, // 30 segundos
   RECAPTCHA_SITE_KEY: import.meta.env.VITE_RECAPTCHA_SITE_KEY || '6Lfj1mArAAAAAIkj3BJGhSMpIdUT6qnCa1aUMrRN',
   DEFAULT_HEADERS: {
@@ -58,15 +58,16 @@ export class ApiClient {
   }
 
   async get(endpoint: string, params?: Record<string, string>): Promise<any> {
-    const url = new URL(buildApiUrl(endpoint));
+    const apiUrl = buildApiUrl(endpoint);
     
+    // Si es una URL relativa (para proxy), usar URLSearchParams
+    let finalUrl = apiUrl;
     if (params) {
-      Object.entries(params).forEach(([key, value]) => {
-        url.searchParams.append(key, value);
-      });
+      const searchParams = new URLSearchParams(params);
+      finalUrl += `?${searchParams.toString()}`;
     }
 
-    const response = await this.fetchWithTimeout(url.toString());
+    const response = await this.fetchWithTimeout(finalUrl);
     return response.json();
   }
 

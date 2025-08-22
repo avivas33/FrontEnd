@@ -8,6 +8,12 @@ export {
   type RecordatorioFacturaData, 
   type BienvenidaData 
 } from './emailService';
+export { 
+  verificacionService, 
+  type SolicitudCodigoVerificacion, 
+  type VerificarCodigoRequest, 
+  type ResponseVerificacion 
+} from './verificacionService';
 
 // Re-exportar la configuración de API
 export { API_CONFIG, apiClient, buildApiUrl } from '../config/api';

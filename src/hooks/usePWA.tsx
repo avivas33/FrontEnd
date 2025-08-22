@@ -18,8 +18,8 @@ export const usePWA = () => {
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
 
   useEffect(() => {
-    // Registrar Service Worker
-    if ('serviceWorker' in navigator) {
+    // Registrar Service Worker solo en producción
+    if ('serviceWorker' in navigator && import.meta.env.PROD) {
       window.addEventListener('load', () => {
         navigator.serviceWorker.register('/sw.js')
           .then((registration) => {
