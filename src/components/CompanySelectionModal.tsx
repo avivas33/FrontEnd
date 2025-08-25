@@ -57,10 +57,6 @@ export function CompanySelectionModal({
                       alt={empresa.CompName}
                       className="h-12 w-auto object-contain"
                     />
-                    <div>
-                      <h3 className="font-semibold text-lg">{empresa.CompName}</h3>
-                      <p className="text-sm text-gray-500">{empresa.ShortName}</p>
-                    </div>
                   </div>
                   <div className="text-right">
                     <div className="flex items-center gap-2 text-billpay-blue">

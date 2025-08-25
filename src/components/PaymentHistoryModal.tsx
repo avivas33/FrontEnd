@@ -201,7 +201,7 @@ export const PaymentHistoryModal: React.FC<PaymentHistoryModalProps> = ({
                 <SelectContent>
                   {empresasDisponibles.map((empresa) => (
                     <SelectItem key={empresa.CompCode} value={empresa.CompCode}>
-                      {empresa.ShortName} - {empresa.CompName}
+                      {empresa.CompName}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -325,9 +325,6 @@ export const PaymentHistoryModal: React.FC<PaymentHistoryModalProps> = ({
                                 <div className="flex items-center gap-4">
                                   <span className="text-sm font-medium">
                                     Factura #{detalle.invoiceNr}
-                                  </span>
-                                  <span className="text-xs text-gray-500">
-                                    {format(new Date(detalle.payDate), 'dd/MM/yyyy', { locale: es })}
                                   </span>
                                 </div>
                                 <span className="text-sm font-semibold">

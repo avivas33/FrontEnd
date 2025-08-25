@@ -9,6 +9,8 @@ import InvoiceDetails from "./pages/InvoiceDetails";
 import PaymentConfirmation from "./pages/PaymentConfirmation";
 import NotFound from "./pages/NotFound";
 import LandingPage from "./pages/LandingPage";
+import VerificacionCodigo from "./pages/VerificacionCodigo";
+import { ActivityDashboard } from "./components/ActivityDashboard";
 import PWAInstallPrompt from "./components/PWAInstallPrompt";
 
 const queryClient = new QueryClient();
@@ -26,11 +28,13 @@ const App = () => (
           <Route path="/" element={<Index />} />
           <Route path="/index" element={<Index />} />
           <Route path="/landing" element={<LandingPage />} />
+          <Route path="/verificacion-codigo" element={<VerificacionCodigo />} />
           <Route path="/invoice-list" element={<InvoiceList />} />
           <Route path="/invoice-list/:clientCode" element={<InvoiceList />} />
           <Route path="/invoice-details" element={<InvoiceDetails />} />
           <Route path="/invoice-details/:invoiceNumber" element={<InvoiceDetails />} />
           <Route path="/payment-confirmation" element={<PaymentConfirmation />} />
+          <Route path="/admin/dashboard" element={<ActivityDashboard />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </BrowserRouter>

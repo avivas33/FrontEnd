@@ -8,6 +8,19 @@ export default defineConfig(({ mode }) => ({
   server: {
     host: "::",
     port: 8080,
+    hmr: {
+      port: 8080
+    },
+    proxy: {
+      '/api': {
+        target: 'http://localhost:7263',
+        changeOrigin: true,
+        secure: false,
+        configure: (proxy, options) => {
+          console.log('Proxy configurado para /api -> http://localhost:7263');
+        }
+      }
+    }
   },
   plugins: [
     react(),
@@ -18,5 +31,9 @@ export default defineConfig(({ mode }) => ({
     alias: {
       "@": path.resolve(__dirname, "./src"),
     },
+  },
+  build: {
+    outDir: "/home/avivas/selfservice/Frente",
+    emptyOutDir: true,
   },
 }));

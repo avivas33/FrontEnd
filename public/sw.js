@@ -27,20 +27,46 @@ self.addEventListener('install', (event) => {
 
 // Fetch - estrategia Network First con fallback a cache
 self.addEventListener('fetch', (event) => {
+  // Filtrar solicitudes que puedan causar problemas de CORS o que no deben cachearse
+  const url = new URL(event.request.url);
+  
+  // Evitar interceptar solicitudes externas que puedan causar problemas de CORS
+  if (url.origin !== location.origin && 
+      (url.hostname.includes('google.com') || 
+       url.hostname.includes('googleapis.com') ||
+       url.hostname.includes('paypal.com') ||
+       url.hostname.includes('yappy.cloud'))) {
+    return; // Permitir que la solicitud pase sin interceptar
+  }
+
+  // No cachear requests POST, PUT, DELETE, etc.
+  if (event.request.method !== 'GET') {
+    event.respondWith(fetch(event.request));
+    return;
+  }
+
   event.respondWith(
     fetch(event.request)
       .then((response) => {
-        // Si la respuesta es válida, clonarla y guardarla en cache
+        // Verificar que la respuesta sea válida y del mismo origen
         if (response && response.status === 200 && response.type === 'basic') {
-          const responseToCache = response.clone();
-          caches.open(CACHE_NAME)
-            .then((cache) => {
-              cache.put(event.request, responseToCache);
-            });
+          try {
+            const responseToCache = response.clone();
+            caches.open(CACHE_NAME)
+              .then((cache) => {
+                cache.put(event.request, responseToCache);
+              })
+              .catch((error) => {
+                console.warn('Service Worker: Error al cachear:', error);
+              });
+          } catch (error) {
+            console.warn('Service Worker: Error al clonar respuesta:', error);
+          }
         }
         return response;
       })
-      .catch(() => {
+      .catch((error) => {
+        console.warn('Service Worker: Error en fetch:', error);
         // Si falla la red, buscar en cache
         return caches.match(event.request)
           .then((response) => {
@@ -51,6 +77,12 @@ self.addEventListener('fetch', (event) => {
             if (event.request.mode === 'navigate') {
               return caches.match('/');
             }
+            // Para otros tipos de solicitudes, generar una respuesta vacía
+            return new Response('', { status: 200, statusText: 'OK' });
+          })
+          .catch((cacheError) => {
+            console.warn('Service Worker: Error en cache:', cacheError);
+            return new Response('', { status: 200, statusText: 'OK' });
           });
       })
   );

@@ -11,7 +11,48 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import BillPayHeader from '@/components/BillPayHeader';
 import { ACHPaymentModal } from '@/components/ACHPaymentModal';
-import { clienteService, pagoService, type CompanyPaymentMethods, type PayPalCreateOrderRequest } from '@/services';
+import { useActivityTracking } from '@/hooks/useActivityTracking';
+import { useIsMobile } from '@/hooks/use-mobile';
+import { clienteService, pagoService } from '@/services';
+
+// Missing interfaces
+interface CompanyPaymentMethods {
+  companyName: string;
+  paymentMethods: {
+    creditCard: {
+      enabled: boolean;
+      displayName: string;
+    };
+    yappy: {
+      enabled: boolean;
+      displayName: string;
+    };
+    paypal: {
+      enabled: boolean;
+      displayName: string;
+    };
+    ach: {
+      enabled: boolean;
+      displayName: string;
+    };
+  };
+}
+
+interface PayPalCreateOrderRequest {
+  clienteCode: string;
+  numeroFactura: string;
+  amount: number;
+  currency: string;
+  description: string;
+  returnUrl: string;
+  cancelUrl: string;
+  emailCliente?: string;
+  nombreCliente: string;
+  invoiceDetails?: Array<{
+    invoiceNumber: string;
+    amount: number;
+  }>;
+}
 
 // Función para formatear números con comas para miles y punto para decimales
 const formatCurrency = (amount: number): string => {
@@ -40,6 +81,7 @@ interface LocationState {
   invoiceDataList: InvoiceData[];
   totalAmount: number;
   empresaSeleccionada?: string;
+  revisarEstadoCuenta?: boolean; // ¡CRÍTICO! Para preservar estado de autenticación
 }
 
 const InvoiceDetails = () => {
@@ -47,10 +89,93 @@ const InvoiceDetails = () => {
   const navigate = useNavigate();
   const { invoiceNumber } = useParams<{ invoiceNumber?: string }>();
   const state = location.state as LocationState & { mobile?: string; eMail?: string };
+  const isMobile = useIsMobile();
   
-  const [isOpen, setIsOpen] = useState(true);
+  // Activity tracking para captura de huella digital
+  const {
+    trackPageView,
+    trackCheckoutStart,
+    trackPaymentAttempt,
+    trackPaymentSuccess,
+    trackPaymentFailed
+  } = useActivityTracking(state?.clientCode || invoiceNumber);
+  
+  const [isOpen, setIsOpen] = useState(() => !isMobile); // Estado inicial basado en tamaño de pantalla
   const [paymentMethod, setPaymentMethod] = useState<'card' | 'yappy' | 'paypal' | 'ach'>('card');
   const [showACHModal, setShowACHModal] = useState(false);
+  
+  // Configurar el estado inicial del colapso según el dispositivo y hacer scroll en móvil
+  useEffect(() => {
+    let isMounted = true;
+    
+    if (isMounted) {
+      setIsOpen(!isMobile); // Oculto en móvil, visible en escritorio
+    }
+    
+    // Auto-scroll a métodos de pago solo en móvil
+    if (isMobile && paymentMethodsRef.current && isMounted) {
+      // Pequeño delay para asegurar que el DOM esté listo
+      setTimeout(() => {
+        if (isMounted) {
+          paymentMethodsRef.current?.scrollIntoView({ 
+            behavior: 'smooth', 
+            block: 'center'
+          });
+        }
+      }, 300);
+    }
+    
+    return () => {
+      isMounted = false;
+    };
+  }, [isMobile]); // Incluir isMobile en dependencias para evitar error React #310
+  
+  // Manejar retorno desde cancelación de PayPal
+  useEffect(() => {
+    let isMounted = true; // Flag para evitar setState en componente desmontado
+    
+    const urlParams = new URLSearchParams(window.location.search);
+    const isPayPalCancel = urlParams.get('paypal_cancel') === 'true';
+    
+    if (isPayPalCancel && isMounted) {
+      // Restaurar estado desde sessionStorage
+      const savedState = sessionStorage.getItem('paypalCancelReturnState');
+      if (savedState && isMounted) {
+        try {
+          const parsedState = JSON.parse(savedState);
+          setInvoiceState(parsedState);
+          
+          // ¡CRÍTICO! Preservar estado de autenticación en sessionStorage para otros componentes
+          if (parsedState.revisarEstadoCuenta !== undefined) {
+            sessionStorage.setItem('userAuthenticated', parsedState.revisarEstadoCuenta.toString());
+          }
+          
+          sessionStorage.removeItem('paypalCancelReturnState');
+          
+          // Limpiar la URL
+          window.history.replaceState({}, '', '/invoice-details');
+          
+          toast.info('Pago con PayPal cancelado. Puedes seleccionar otro método de pago.');
+          
+          console.log('🔄 Estado de PayPal restaurado correctamente:', {
+            autenticado: parsedState.revisarEstadoCuenta,
+            facturas: parsedState.invoiceDataList?.length
+          });
+        } catch (error) {
+          console.error('Error al restaurar estado de PayPal:', error);
+          toast.error('Error al restaurar el estado. Por favor, intenta de nuevo.');
+        }
+      } else if (isMounted) {
+        // Si no hay estado guardado, mostrar mensaje de ayuda
+        toast.warning('No se pudo restaurar el estado anterior. Por favor, busca tu cliente nuevamente.');
+      }
+    }
+    
+    // Cleanup function
+    return () => {
+      isMounted = false;
+    };
+  }, []);
   
   // Credit card states
   const [cardNumber, setCardNumber] = useState('');
@@ -79,9 +204,204 @@ const InvoiceDetails = () => {
   
   // Refs
   const yappyBtnRef = useRef<HTMLDivElement>(null);
+  const paymentMethodsRef = useRef<HTMLDivElement>(null);
+  const isPaymentInProgress = useRef(false); // Ref adicional para prevenir doble procesamiento
+
+  // Usar el state original o el simulado
+  const currentState = state || invoiceState;
+
+  // Efecto para cargar las formas de pago disponibles para la empresa
+  useEffect(() => {
+    const loadPaymentMethods = async () => {
+      // Obtener el código de empresa desde las facturas seleccionadas
+      const empresaCode = currentState?.empresaSeleccionada || currentState?.invoiceDataList?.[0]?.invoiceNumber?.split('-')?.[0];
+      
+      if (!empresaCode) {
+        console.warn('No se pudo determinar el código de empresa');
+        setLoadingPaymentMethods(false);
+        return;
+      }
+
+      try {
+        console.log(`Cargando formas de pago para empresa: ${empresaCode}`);
+        const response = await clienteService.getPaymentMethodsByCompany(empresaCode);
+        
+        if (response.success && response.data) {
+          setPaymentMethods(response.data);
+          
+          // Configurar el método de pago por defecto según lo que esté habilitado
+          const methods = response.data.paymentMethods;
+          if (methods.creditCard.enabled) {
+            setPaymentMethod('card');
+          } else if (methods.yappy.enabled) {
+            setPaymentMethod('yappy');
+          } else if (methods.paypal?.enabled) {
+            setPaymentMethod('paypal');
+          } else if (methods.ach.enabled) {
+            setPaymentMethod('ach');
+          }
+        } else {
+          console.error('Error al obtener formas de pago:', response);
+          toast.error('No se pudieron cargar las formas de pago disponibles');
+        }
+      } catch (error) {
+        console.error('Error al cargar formas de pago:', error);
+        toast.error('Error al cargar las formas de pago');
+      } finally {
+        setLoadingPaymentMethods(false);
+      }
+    };
+
+    loadPaymentMethods();
+  }, [currentState?.empresaSeleccionada, currentState?.invoiceDataList]);
+
+  // Efecto para hacer scroll cuando los métodos de pago terminen de cargar en móvil
+  useEffect(() => {
+    let isMounted = true;
+    
+    if (!loadingPaymentMethods && isMobile && paymentMethodsRef.current && isMounted) {
+      // Pequeño delay para asegurar que el DOM esté completamente renderizado
+      setTimeout(() => {
+        if (isMounted) {
+          paymentMethodsRef.current?.scrollIntoView({ 
+            behavior: 'smooth', 
+            block: 'start'
+          });
+        }
+      }, 100);
+    }
+    
+    return () => {
+      isMounted = false;
+    };
+  }, [loadingPaymentMethods, isMobile]);
+
+  useEffect(() => {
+    // Cargar el script de Yappy solo una vez
+    if (!document.getElementById('yappy-cdn-script')) {
+      const script = document.createElement('script');
+      script.type = 'module';
+      script.src = 'https://bt-cdn.yappy.cloud/v1/cdn/web-component-btn-yappy.js';
+      script.id = 'yappy-cdn-script';
+      document.body.appendChild(script);
+    }
+
+    // Esperar a que el componente esté disponible en el DOM
+    const interval = setInterval(() => {
+      const btnyappy = document.querySelector('btn-yappy') as any;
+      if (btnyappy) {
+        // Evento de click: crear orden en backend
+        btnyappy.addEventListener('eventClick', async () => {
+          try {
+            btnyappy.isButtonLoading = true;
+            const aliasYappy = yappyPhone;
+            
+            const nowEpoch = Math.floor(Date.now() / 1000);
+            const total = currentState.totalAmount.toFixed(2);
+            const body = {
+              orderId: currentState.invoiceDataList[0].invoiceNumber,
+              domain: "http://portal.celero.net",
+              paymentDate: nowEpoch,
+              aliasYappy: aliasYappy,
+              ipnUrl: `${window.location.origin}/api/clientes/yappy/ipn`,
+              discount: "0.00",
+              taxes: "0.00",
+              subtotal: total,
+              total: total
+            };
+            const result = await pagoService.crearOrdenYappy(body);
+            if (result && result.body?.token && result.body?.documentName && result.body?.transactionId) {
+              const params = {
+                transactionId: result.body.transactionId,
+                documentName: result.body.documentName,
+                token: result.body.token
+              };
+              btnyappy.eventPayment(params);
+            } else {
+              toast.error('No se pudo crear la orden de Yappy');
+            }
+          } catch (error) {
+            toast.error('Error al crear la orden de Yappy');
+          } finally {
+            btnyappy.isButtonLoading = false;
+          }
+        });
+        
+        btnyappy.addEventListener('eventSuccess', async (event: any) => {
+          const facturesDetail = currentState.invoiceDataList.map(inv => 
+            `${inv.invoiceNumber}: $${formatCurrency(inv.amount)}`
+          ).join(', ');
+          
+          toast.success('¡Pago Yappy realizado con éxito!', {
+            description: `Facturas pagadas: ${facturesDetail}. Total: $${formatCurrency(currentState.totalAmount)}`,
+            duration: 5000,
+          });
+          
+          try {
+            const orderId = event?.detail?.orderId || currentState.invoiceDataList[0].invoiceNumber;
+            const recibo = {
+              serNr: orderId,
+              transDate: new Date().toISOString().slice(0, 10),
+              payMode: 'YP',
+              person: currentState.invoiceDataList[0].clientName || '',
+              cuCode: currentState.invoiceDataList[0].clientCode || '',
+              refStr: orderId,
+              email: currentState.eMail, // Agregar email del cliente para notificación
+              detalles: currentState.invoiceDataList.map(inv => ({
+                invoiceNr: inv.invoiceNumber,
+                sum: inv.amount, // Usar número directamente
+                objects: '', // Agregar campos requeridos
+                stp: '1'     // Agregar campos requeridos
+              }))
+            };
+
+            const resultado = await pagoService.crearRecibo(recibo);
+            if (resultado.success) {
+              navigate('/payment-confirmation', {
+                state: {
+                  clientName: currentState.invoiceDataList[0].clientName,
+                  clientCode: currentState.invoiceDataList[0].clientCode,
+                  invoiceNumbers: currentState.invoiceDataList.map(inv => inv.invoiceNumber).join(', '),
+                  amount: currentState.totalAmount,
+                  paymentMethod: 'YAPPY',
+                  receiptNumber: resultado.data?.SerNr,
+                  invoiceData: currentState.invoiceDataList.map(inv => ({
+                    ...inv,
+                    status: 'pagado'
+                  }))
+                }
+              });
+            } else {
+              toast.error(resultado.message || 'Error al crear el recibo de caja');
+            }
+          } catch (error) {
+            await trackPaymentFailed('yappy', currentState.totalAmount, 'USD', 'RECEIPT_CREATION_ERROR');
+            console.error('Error al crear recibo:', error);
+            toast.error('Pago exitoso, pero error al crear recibo');
+          }
+        });
+        
+        btnyappy.addEventListener('eventError', (event) => {
+          toast.error('Error en el pago con Yappy');
+        });
+        clearInterval(interval);
+      }
+    }, 300);
+    
+    return () => {
+      clearInterval(interval);
+    };
+  }, [currentState, yappyPhone, navigate, trackPaymentSuccess, trackPaymentFailed]);
   
   // Efecto para cargar factura cuando se pasa como parámetro
   useEffect(() => {
+    // Track page view para captura de huella digital
+    trackPageView('invoice_details', {
+      invoiceNumber: invoiceNumber || state?.numero_factura,
+      clientCode: state?.codigo_cliente,
+      amount: state?.saldo_pendiente
+    });
+    
     const loadInvoiceByNumber = async () => {
       if (!invoiceNumber || state?.invoiceDataList) {
         // Si no hay parámetro o ya tenemos datos del state, no hacer nada
@@ -164,10 +484,14 @@ const InvoiceDetails = () => {
     };
     
     loadInvoiceByNumber();
-  }, [invoiceNumber, state, navigate]);
+  }, [invoiceNumber, state, navigate, trackPageView]);
   
-  // Usar el state original o el simulado
-  const currentState = state || invoiceState;
+  // Debug: Verificar estado de autenticación
+  console.log('🔍 InvoiceDetails - Estado de autenticación:', {
+    revisarEstadoCuenta: currentState?.revisarEstadoCuenta,
+    fromState: state?.revisarEstadoCuenta,
+    fromInvoiceState: invoiceState?.revisarEstadoCuenta
+  });
   
   // Si está cargando la factura por parámetro
   if (loadingInvoice) {
@@ -181,8 +505,22 @@ const InvoiceDetails = () => {
     );
   }
   
-  // Si no hay datos de factura, redirigir
+  // Si no hay datos de factura y no es un retorno de PayPal, redirigir
+  const urlParams = new URLSearchParams(window.location.search);
+  const isPayPalReturn = urlParams.get('paypal_cancel') === 'true';
+  
   if (!currentState?.invoiceDataList || currentState.invoiceDataList.length === 0) {
+    // Si es un retorno de PayPal, esperar un momento para que se restaure el estado
+    if (isPayPalReturn) {
+      return (
+        <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+            <p className="text-lg">Restaurando información de pago...</p>
+          </div>
+        </div>
+      );
+    }
     navigate('/');
     return null;
   }
@@ -195,224 +533,74 @@ const InvoiceDetails = () => {
     const soloNumeros = mobile.replace(/\D/g, '');
     
     // Manejar varios formatos posibles:
+    // 507XXXXXXXX (11 dígitos con código país)
+    // 6XXXXXXX (8 dígitos sin código país)
     
-    // 1. Si es un número internacional completo (ej: +50769387770)
-    if (soloNumeros.startsWith('507') && soloNumeros.length >= 11) {
-      return soloNumeros.substring(3, 11); // Tomar los 8 dígitos después del prefijo país
+    if (soloNumeros.length === 11 && soloNumeros.startsWith('507')) {
+      return soloNumeros; // Ya tiene el formato correcto
+    } else if (soloNumeros.length === 8 && soloNumeros.startsWith('6')) {
+      return '507' + soloNumeros; // Agregar código país
     }
     
-    // 2. Si es un número con formato local (ej: 69387770)
-    if (soloNumeros.length === 8) {
-      return soloNumeros;
-    }
-    
-    // 3. Si es un número con otro formato, intentar tomar los últimos 8 dígitos
-    return soloNumeros.slice(-8);
+    return soloNumeros; // Devolver tal como está para otros casos
   }
-
-  // Efecto para cargar las formas de pago disponibles para la empresa
-  useEffect(() => {
-    const loadPaymentMethods = async () => {
-      // Obtener el código de empresa desde las facturas seleccionadas
-      const empresaCode = currentState?.empresaSeleccionada || currentState?.invoiceDataList?.[0]?.invoiceNumber?.split('-')?.[0];
-      
-      if (!empresaCode) {
-        console.warn('No se pudo determinar el código de empresa');
-        setLoadingPaymentMethods(false);
-        return;
-      }
-
-      try {
-        console.log(`Cargando formas de pago para empresa: ${empresaCode}`);
-        const response = await clienteService.getPaymentMethodsByCompany(empresaCode);
-        
-        if (response.success && response.data) {
-          setPaymentMethods(response.data);
-          
-          // Configurar el método de pago por defecto según lo que esté habilitado
-          const methods = response.data.paymentMethods;
-          if (methods.creditCard.enabled) {
-            setPaymentMethod('card');
-          } else if (methods.yappy.enabled) {
-            setPaymentMethod('yappy');
-          } else if (methods.paypal?.enabled) {
-            setPaymentMethod('paypal');
-          } else if (methods.ach.enabled) {
-            setPaymentMethod('ach');
-          }
-        } else {
-          console.error('Error al obtener formas de pago:', response);
-          toast.error('No se pudieron cargar las formas de pago disponibles');
-        }
-      } catch (error) {
-        console.error('Error al cargar formas de pago:', error);
-        toast.error('Error al cargar las formas de pago');
-      } finally {
-        setLoadingPaymentMethods(false);
-      }
-    };
-
-    loadPaymentMethods();
-  }, [currentState?.empresaSeleccionada, currentState?.invoiceDataList]);
-
-  useEffect(() => {
-    // Cargar el script de Yappy solo una vez
-    if (!document.getElementById('yappy-cdn-script')) {
-      const script = document.createElement('script');
-      script.type = 'module';
-      script.src = 'https://bt-cdn.yappy.cloud/v1/cdn/web-component-btn-yappy.js';
-      script.id = 'yappy-cdn-script';
-      document.body.appendChild(script);
-    }
-
-    // Esperar a que el componente esté disponible en el DOM
-    const interval = setInterval(() => {
-      const btnyappy = document.querySelector('btn-yappy') as any;
-      if (btnyappy) {
-        // Evento de click: crear orden en backend
-        btnyappy.addEventListener('eventClick', async () => {
-          try {
-            btnyappy.isButtonLoading = true;
-            // Limpiar y loguear el móvil justo antes de crear la orden
-            let aliasYappy = yappyPhone;
-            if (currentState?.mobile) {
-              aliasYappy = limpiarCelular(currentState.mobile);
-              setYappyPhone(aliasYappy); // sincroniza el input visual
-            }
-            // Construir el body según la documentación YappyOrdenRequest
-            const nowEpoch = Math.floor(Date.now() / 1000);
-            const total = currentState.totalAmount.toFixed(2); // Para API, mantener formato sin comas
-            const body = {
-              orderId: currentState.invoiceDataList[0].invoiceNumber, // o un id único de orden
-              domain: "https://selfservice-dev.celero.network", // URL de dominio configurado en Yappy Comercial
-              paymentDate: nowEpoch,
-              aliasYappy: aliasYappy,
-              ipnUrl: `${window.location.origin}/api/clientes/yappy/ipn`,
-              discount: "0.00",
-              taxes: "0.00",
-              subtotal: total,
-              total: total
-            };
-            const result = await pagoService.crearOrdenYappy(body);
-            if (result && result.body?.token && result.body?.documentName && result.body?.transactionId) {
-              const params = {
-                transactionId: result.body.transactionId,
-                documentName: result.body.documentName,
-                token: result.body.token
-              };
-              btnyappy.eventPayment(params);
-            } else {
-              toast.error('No se pudo crear la orden de Yappy');
-            }
-          } catch (error) {
-            toast.error('Error al crear la orden de Yappy');
-          } finally {
-            btnyappy.isButtonLoading = false;
-          }
-        });
-        // Eventos de éxito y error
-        btnyappy.addEventListener('eventSuccess', async (event: any) => {
-          // Crear mensaje detallado con facturas
-          const facturesDetail = currentState.invoiceDataList.map(inv => 
-            `${inv.invoiceNumber}: $${formatCurrency(inv.amount)}`
-          ).join(', ');
-          
-          toast.success('¡Pago Yappy realizado con éxito!', {
-            description: `Facturas pagadas: ${facturesDetail}. Total: $${formatCurrency(currentState.totalAmount)}`,
-            duration: 5000,
-          });
-          // Crear recibo de caja con Forma de Pago 'YP' y RefStr = orderId
-          try {
-            const orderId = event?.detail?.orderId || currentState.invoiceDataList[0].invoiceNumber;
-            const recibo = {
-              serNr: orderId, // Usar orderId como serNr para trazabilidad
-              transDate: new Date().toISOString().slice(0, 10),
-              payMode: 'YP',
-              person: currentState.invoiceDataList[0].clientName || '',
-              cuCode: currentState.invoiceDataList[0].clientCode || '',
-              refStr: orderId,
-              detalles: currentState.invoiceDataList.map(inv => ({
-                invoiceNr: inv.invoiceNumber,
-                sum: formatCurrency(inv.amount),
-                objects: '',
-                stp: '1'
-              }))
-            };
-            const reciboData = await pagoService.crearRecibo(recibo);
-            if (!reciboData.success) {
-              toast.error(reciboData.message || 'Error al crear el recibo de caja');
-              return;
-            }
-            navigate('/payment-confirmation', {
-              state: {
-                clientName: currentState.invoiceDataList[0].clientName,
-                clientCode: currentState.invoiceDataList[0].clientCode,
-                invoiceNumbers: currentState.invoiceDataList.map(inv => inv.invoiceNumber).join(', '),
-                amount: currentState.totalAmount,
-                paymentMethod: 'YAPPY',
-                receiptNumber: reciboData.data?.SerNr, // Número de recibo del ERP
-                invoiceData: currentState.invoiceDataList.map(inv => ({
-                  ...inv,
-                  status: 'pagado' // Marcar como pagada
-                }))
-              }
-            });
-          } catch (err) {
-            toast.error('Error de conexión al crear el recibo de caja');
-          }
-        });
-        btnyappy.addEventListener('eventError', (event) => {
-          toast.error('Error en el pago con Yappy');
-        });
-        clearInterval(interval);
-      }
-    }, 300);
-    return () => clearInterval(interval);
-  }, [currentState, yappyPhone]);
   
-  // Al cargar la página, prellenar el móvil si hay datos disponibles
-  useEffect(() => {
-    // Asegurémonos de que stateMobile sea un string o undefined, no null
-    const stateMobile = currentState?.mobile || undefined;
-    
-    if (!yappyPhone && stateMobile) {
-      const cleaned = limpiarCelular(stateMobile);
-      
-      if (cleaned.length > 0) {
-        setYappyPhone(cleaned);
-      }
-    } else if (!stateMobile) {
-      // Si no hay número móvil en el state, asignar un valor predeterminado para facilitar las pruebas
-      const defaultMobile = '69387770';
-      setYappyPhone(defaultMobile);
-    }
-  }, [currentState?.mobile, yappyPhone]);
+  // Función para renderizar facturas como cards en móvil
+  const renderMobileInvoiceCards = () => (
+    <div className="space-y-3">
+      {currentState.invoiceDataList.map((invoice, index) => (
+        <Card key={index} className="p-4 shadow-sm border-gray-200">
+          <div className="space-y-2">
+            <div className="flex justify-between items-start">
+              <div>
+                <p className="text-sm text-gray-600">Factura</p>
+                <p className="font-medium text-black">{invoice.invoiceNumber}</p>
+              </div>
+              <div className="text-right">
+                <p className="text-sm text-gray-600">Monto</p>
+                <p className="font-bold text-lg text-black">${formatCurrency(invoice.amount)}</p>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-4 pt-2">
+              <div>
+                <p className="text-xs text-gray-500">Fecha emisión</p>
+                <p className="text-sm text-gray-700">{parseLocalDate(invoice.invDate).toLocaleDateString()}</p>
+              </div>
+              <div>
+                <p className="text-xs text-gray-500">Vencimiento</p>
+                <p className="text-sm text-gray-700">{parseLocalDate(invoice.dueDate).toLocaleDateString()}</p>
+              </div>
+            </div>
+          </div>
+        </Card>
+      ))}
+    </div>
+  );
 
-  // Prellenar el campo yappyPhone cada vez que el usuario cambie a Yappy
-  useEffect(() => {
-    if (paymentMethod === 'yappy' && !yappyPhone) {
-      // Si tenemos un número en el state, usarlo
-      if (currentState?.mobile) {
-        const cleaned = limpiarCelular(currentState.mobile);
-        
-        if (cleaned.length > 0) {
-          setYappyPhone(cleaned);
-        }
-      } 
-      // Si no hay número en el state, usar un valor predeterminado
-      else {
-        const defaultMobile = '69387770';
-        setYappyPhone(defaultMobile);
-      }
-    }
-  }, [paymentMethod, currentState?.mobile]);
-  
   const handlePayPalPayment = async () => {
     setIsProcessing(true);
+    
+    // Track payment attempt
+    await trackPaymentAttempt('paypal', currentState.totalAmount, 'USD');
     
     try {
       // Prepare PayPal order data
       const invoiceNumbers = currentState.invoiceDataList.map(inv => inv.invoiceNumber).join(', ');
+      
+      // Guardar estado actual para la cancelación de PayPal
+      const cancelReturnState = {
+        clientCode: currentState.invoiceDataList[0].clientCode,
+        clientName: currentState.invoiceDataList[0].clientName,
+        searchType: 'hogar',
+        mobile: currentState.mobile,
+        eMail: currentState.eMail,
+        invoiceDataList: currentState.invoiceDataList,
+        totalAmount: currentState.totalAmount,
+        revisarEstadoCuenta: currentState.revisarEstadoCuenta, // ¡CRÍTICO! Preservar autenticación
+        fromPayPalCancel: true
+      };
+      sessionStorage.setItem('paypalCancelReturnState', JSON.stringify(cancelReturnState));
+      
       const orderRequest: PayPalCreateOrderRequest = {
         clienteCode: currentState.invoiceDataList[0].clientCode,
         numeroFactura: invoiceNumbers,
@@ -420,19 +608,33 @@ const InvoiceDetails = () => {
         currency: 'USD',
         description: `Pago de facturas: ${invoiceNumbers}`,
         returnUrl: `${window.location.origin}/payment-confirmation?paypal=true`,
-        cancelUrl: `${window.location.origin}/invoice-details`,
+        cancelUrl: `${window.location.origin}/invoice-details?paypal_cancel=true`,
         emailCliente: currentState.eMail || undefined,
-        nombreCliente: currentState.invoiceDataList[0].clientName
+        nombreCliente: currentState.invoiceDataList[0].clientName,
+        invoiceDetails: currentState.invoiceDataList.map(inv => ({
+          invoiceNumber: inv.invoiceNumber,
+          amount: inv.amount
+        }))
       };
+      
+      console.log('🔍 PayPal URLs configuradas:', {
+        returnUrl: orderRequest.returnUrl,
+        cancelUrl: orderRequest.cancelUrl,
+        origin: window.location.origin
+      });
       
       // Create PayPal order
       const orderResponse = await pagoService.crearOrdenPayPal(orderRequest);
       
       if (orderResponse.success && orderResponse.data) {
+        // Track successful order creation
+        await trackPaymentSuccess('paypal', currentState.totalAmount, 'USD', orderResponse.data.orderId);
+        
         // Store invoice data in sessionStorage for later retrieval
         sessionStorage.setItem('paypalPaymentData', JSON.stringify({
           clientCode: currentState.invoiceDataList[0].clientCode,
           clientName: currentState.invoiceDataList[0].clientName,
+          emailCliente: currentState.eMail || '',
           invoiceNumbers: invoiceNumbers,
           invoiceDataList: currentState.invoiceDataList,
           totalAmount: currentState.totalAmount,
@@ -442,9 +644,13 @@ const InvoiceDetails = () => {
         // Redirect to PayPal
         window.location.href = orderResponse.data.approvalUrl;
       } else {
+        // Track failed order creation
+        await trackPaymentFailed('paypal', currentState.totalAmount, 'USD', 'ORDER_CREATION_FAILED');
         toast.error(orderResponse.message || 'Error al crear la orden de pago PayPal');
       }
     } catch (error) {
+      // Track error
+      await trackPaymentFailed('paypal', currentState.totalAmount, 'USD', 'API_ERROR');
       console.error('Error al procesar pago PayPal:', error);
       toast.error('Error al procesar el pago con PayPal');
     } finally {
@@ -453,26 +659,47 @@ const InvoiceDetails = () => {
   };
   
   const handlePayment = async () => {
+    // Prevenir doble click usando ref para respuesta inmediata
+    if (isPaymentInProgress.current || isProcessing) {
+      console.log('Pago ya en proceso, ignorando click duplicado');
+      return;
+    }
+    
+    // Marcar inmediatamente como en progreso
+    isPaymentInProgress.current = true;
+    
+    // Track checkout start
+    await trackCheckoutStart(paymentMethod, currentState.totalAmount, 'USD');
+    
     if (paymentMethod === 'card') {
       // Validaciones existentes
       if (!cardNumber.trim()) {
         toast.error('Por favor ingrese el número de tarjeta');
+        isPaymentInProgress.current = false;
         return;
       }
       if (!cardName.trim()) {
         toast.error('Por favor ingrese el nombre en la tarjeta');
+        isPaymentInProgress.current = false;
         return;
       }
       if (!expiryDate.trim()) {
         toast.error('Por favor ingrese la fecha de expiración');
+        isPaymentInProgress.current = false;
         return;
       }
       if (!cvv.trim()) {
         toast.error('Por favor ingrese el código de seguridad');
+        isPaymentInProgress.current = false;
         return;
       }
 
+      // Deshabilitar botón INMEDIATAMENTE
       setIsProcessing(true);
+      
+      // Track payment attempt
+      await trackPaymentAttempt(paymentMethod, currentState.totalAmount, 'USD');
+      
       try {
         // Construir el body para el endpoint
         const invoiceNumbers = currentState.invoiceDataList.map(inv => inv.invoiceNumber).join(', ');
@@ -496,10 +723,25 @@ const InvoiceDetails = () => {
           order_id: invoiceNumbers,
           description: `Pago de facturas: ${invoiceNumbers}`,
           contract_number: currentState.invoiceDataList[0].clientCode,
-          company_code: companyCode // Código de empresa para credenciales Cobalt específicas
+          company_code: companyCode, // Código de empresa para credenciales Cobalt específicas
+          InvoiceDetails: currentState.invoiceDataList.map(inv => ({
+            InvoiceNumber: inv.invoiceNumber,
+            Amount: inv.amount
+          }))
         };
         const data = await pagoService.ventaTarjeta(venta);
         if (data.status === 'ok' && data.data?.status === 'authorized') {
+          // PRIORIDAD: Pago autorizado - capturar authorization_number
+          const authNumber = data.data.authorization_number || data.data.ballot || '';
+          
+          // Track payment success
+          await trackPaymentSuccess(
+            paymentMethod, 
+            currentState.totalAmount, 
+            'USD', 
+            authNumber
+          );
+          
           // Crear mensaje detallado con facturas
           const facturesDetail = currentState.invoiceDataList.map(inv => 
             `${inv.invoiceNumber}: $${formatCurrency(inv.amount)}`
@@ -509,7 +751,9 @@ const InvoiceDetails = () => {
             description: `Facturas pagadas: ${facturesDetail}. Total: $${formatCurrency(currentState.totalAmount)}`,
             duration: 5000,
           });
-          // Crear recibo de caja
+          
+          // Intentar crear recibo pero NO bloquear la navegación si falla
+          let receiptNumber = null;
           try {
             const recibo = {
               serNr: data.data.ballot || '',
@@ -517,87 +761,174 @@ const InvoiceDetails = () => {
               payMode: 'TC',
               person: currentState.invoiceDataList[0].clientName || '',
               cuCode: currentState.invoiceDataList[0].clientCode || '',
-              refStr: data.data.authorization_number || '',
+              refStr: authNumber,
+              email: currentState.eMail,
               detalles: currentState.invoiceDataList.map(inv => ({
                 invoiceNr: inv.invoiceNumber,
-                sum: formatCurrency(inv.amount),
+                sum: inv.amount,
                 objects: '',
                 stp: '1'
               }))
             };
             const reciboData = await pagoService.crearRecibo(recibo);
-            if (!reciboData.success) {
-              toast.error(reciboData.message || 'Error al crear el recibo de caja');
-              return;
+            if (reciboData.success) {
+              receiptNumber = reciboData.data?.SerNr;
+            } else {
+              console.error('Error creando recibo:', reciboData.message);
+              // No mostrar error - el pago fue exitoso
             }
-            
-            navigate('/payment-confirmation', { 
-              state: {
-                clientName: currentState.invoiceDataList[0].clientName,
-                clientCode: currentState.invoiceDataList[0].clientCode,
-                invoiceNumbers: currentState.invoiceDataList.map(inv => inv.invoiceNumber).join(', '),
-                amount: currentState.totalAmount,
-                paymentMethod: 'TARJETA',
-                receiptNumber: reciboData.data?.SerNr, // Número de recibo del ERP
-                invoiceData: currentState.invoiceDataList.map(inv => ({
-                  ...inv,
-                  status: 'pagado' // Marcar como pagada
-                }))
-              }
-            });
           } catch (err) {
-            toast.error('Error de conexión al crear el recibo de caja');
-            return;
+            console.error('Error de conexión al crear recibo:', err);
+            // No mostrar error - el pago fue exitoso
           }
+          
+          // SIEMPRE navegar a confirmación si el pago fue autorizado
+          navigate('/payment-confirmation', { 
+            state: {
+              clientName: currentState.invoiceDataList[0].clientName,
+              clientCode: currentState.invoiceDataList[0].clientCode,
+              invoiceNumbers: currentState.invoiceDataList.map(inv => inv.invoiceNumber).join(', '),
+              amount: currentState.totalAmount,
+              paymentMethod: 'TARJETA',
+              transactionId: authNumber, // Enviar authorization_number como transactionId
+              receiptNumber: receiptNumber, // Puede ser null si falló el recibo
+              invoiceData: currentState.invoiceDataList.map(inv => ({
+                ...inv,
+                status: 'pagado'
+              }))
+            }
+          });
+          
+          // Resetear flags después de navegar
+          setIsProcessing(false);
+          isPaymentInProgress.current = false;
         } else {
+          // Track payment failure with response message
+          await trackPaymentFailed(
+            paymentMethod, 
+            currentState.totalAmount, 
+            'USD', 
+            data.data?.status || 'PAYMENT_DECLINED', 
+            data.message || 'Payment was declined'
+          );
+          
           toast.error(data.message || 'Error procesando el pago');
         }
       } catch (err) {
+        // Track payment failure for connection error
+        await trackPaymentFailed(
+          paymentMethod, 
+          currentState.totalAmount, 
+          'USD', 
+          'CONNECTION_ERROR', 
+          'Error de conexión con el procesador de pagos'
+        );
+        
         toast.error('Error de conexión con el procesador de pagos');
       } finally {
         setIsProcessing(false);
+        isPaymentInProgress.current = false; // Resetear el ref
       }
       return;
     } else if (paymentMethod === 'yappy') {
       // Validate Yappy details
       if (!yappyPhone.trim()) {
         toast.error('Por favor ingrese el número de celular asociado a Yappy');
+        isPaymentInProgress.current = false;
         return;
       }
       
       if (yappyPhone.length < 8) {
         toast.error('El número de celular debe tener al menos 8 dígitos');
+        isPaymentInProgress.current = false;
         return;
       }
+      
+      setIsProcessing(true);
+      
+      // Track payment attempt
+      await trackPaymentAttempt(paymentMethod, currentState.totalAmount, 'USD');
+      
+      try {
+        // Crear solicitud Yappy con detalles de facturas
+        const yappyRequest = {
+          yappyPhone: yappyPhone,
+          clienteCode: currentState.invoiceDataList[0].clientCode,
+          emailCliente: currentState.eMail || '',
+          invoiceDetails: currentState.invoiceDataList.map(inv => ({
+            invoiceNumber: inv.invoiceNumber,
+            amount: inv.amount
+          }))
+        };
+
+        const data = await pagoService.crearOrdenYappyFrontend(yappyRequest);
+        
+        if (data.success) {
+          // Track payment success
+          await trackPaymentSuccess(
+            paymentMethod, 
+            currentState.totalAmount, 
+            'USD', 
+            data.data?.orderId || `YAPPY-${Date.now()}`
+          );
+          
+          // Crear mensaje detallado con facturas
+          const facturesDetail = currentState.invoiceDataList.map(inv => 
+            `${inv.invoiceNumber}: $${inv.amount.toFixed(2)}`
+          ).join(', ');
+          
+          toast.success('¡Pago Yappy realizado con éxito!', {
+            description: `Facturas pagadas: ${facturesDetail}. Total: $${currentState.totalAmount.toFixed(2)}`,
+            duration: 5000,
+          });
+          
+          navigate('/payment-confirmation', { 
+            state: {
+              clientName: currentState.invoiceDataList[0].clientName,
+              clientCode: currentState.invoiceDataList[0].clientCode,
+              invoiceNumbers: currentState.invoiceDataList.map(inv => inv.invoiceNumber).join(', '),
+              amount: currentState.totalAmount,
+              paymentMethod: paymentMethod,
+              transactionId: data.data?.orderId,
+              receiptNumber: data.data?.receiptNumber,
+              invoiceData: currentState.invoiceDataList.map(inv => ({
+                ...inv,
+                status: 'pagado'
+              }))
+            }
+          });
+        } else {
+          // Track payment failure
+          await trackPaymentFailed(
+            paymentMethod, 
+            currentState.totalAmount, 
+            'USD', 
+            data.message || 'Error en Yappy'
+          );
+          
+          toast.error(data.message || 'Error al procesar el pago con Yappy');
+        }
+      } catch (error) {
+        console.error('Error en pago Yappy:', error);
+        
+        // Track payment failure
+        await trackPaymentFailed(
+          paymentMethod, 
+          currentState.totalAmount, 
+          'USD', 
+          'Error de conexión con Yappy'
+        );
+        
+        toast.error('Error al conectar con Yappy. Por favor, intente nuevamente.');
+      } finally {
+        setIsProcessing(false);
+        isPaymentInProgress.current = false; // Resetear el ref
+      }
+      return;
     }
     
-    // Simulate payment processing
-    setIsProcessing(true);
-    
-    setTimeout(() => {
-      setIsProcessing(false);
-      
-      // Success case - navigate to confirmation page
-      // Crear mensaje detallado con facturas
-      const facturesDetail = currentState.invoiceDataList.map(inv => 
-        `${inv.invoiceNumber}: $${inv.amount.toFixed(2)}`
-      ).join(', ');
-      
-      toast.success('¡Pago realizado con éxito!', {
-        description: `Facturas pagadas: ${facturesDetail}. Total: $${currentState.totalAmount.toFixed(2)}`,
-        duration: 5000,
-      });
-      navigate('/payment-confirmation', { 
-        state: {
-          clientName: currentState.invoiceDataList[0].clientName,
-          clientCode: currentState.invoiceDataList[0].clientCode,
-          invoiceNumbers: currentState.invoiceDataList.map(inv => inv.invoiceNumber).join(', '),
-          amount: currentState.totalAmount,
-          paymentMethod: paymentMethod,
-          invoiceData: currentState.invoiceDataList
-        }
-      });
-    }, 2000);
+    // Resetear el ref al final si llega aquí
+    isPaymentInProgress.current = false;
   };
   
   // Format card number with spaces
@@ -727,9 +1058,10 @@ const InvoiceDetails = () => {
           person: currentState.invoiceDataList[0].clientName || '',
           cuCode: currentState.invoiceDataList[0].clientCode || '',
           refStr: `ACH-${files[0]?.numeroTransaccion} - ${registrosExitosos.length} comprobantes`,
+          // No enviar email para ACH - se excluye automáticamente en el backend
           detalles: currentState.invoiceDataList.map(inv => ({
             invoiceNr: inv.invoiceNumber,
-            sum: inv.amount.toFixed(2),
+            sum: inv.amount, // Usar número directamente
             objects: '',
             stp: '1'
           }))
@@ -775,7 +1107,7 @@ const InvoiceDetails = () => {
     <div className="min-h-screen bg-gray-50 flex flex-col">
       <BillPayHeader />
       
-      <main className="flex-1 container max-w-4xl py-6 px-4">
+      <main className={`flex-1 container max-w-4xl py-6 ${isMobile ? 'px-3' : 'px-4'}`}>
         <div className="mb-6">
           <button 
             onClick={() => navigate('/invoice-list', { state: { clientCode: currentState.clientCode, searchType: currentState.searchType } })} 
@@ -788,9 +1120,9 @@ const InvoiceDetails = () => {
         
         <h1 className="text-2xl font-bold text-black mb-6">Detalles de pago</h1>
         
-        <div className="grid md:grid-cols-3 gap-6">
-          <div className="md:col-span-2">
-            <Card className="p-6 shadow-sm border-gray-100 mb-6">
+        <div className={`${isMobile ? 'space-y-6' : 'grid md:grid-cols-3 gap-6'}`}>
+          <div className={`${isMobile ? '' : 'md:col-span-2'}`}>
+            <Card className={`${isMobile ? 'p-4' : 'p-6'} shadow-sm border-gray-100 mb-6`}>
               <div className="mb-6">
                 <h2 className="text-xl text-black font-medium mb-4">Resumen de facturas</h2>
                 <Collapsible open={isOpen} onOpenChange={setIsOpen}>
@@ -799,28 +1131,34 @@ const InvoiceDetails = () => {
                     <div className="text-sm text-gray-500">{isOpen ? 'Ocultar' : 'Mostrar'}</div>
                   </CollapsibleTrigger>
                   <CollapsibleContent>
-                    <div className="overflow-x-auto mt-4">
-                      <Table>
-                        <TableHeader>
-                          <TableRow>
-                            <TableHead>Factura</TableHead>
-                            <TableHead>Fecha</TableHead>
-                            <TableHead>Vencimiento</TableHead>
-                            <TableHead>Monto</TableHead>
-                          </TableRow>
-                        </TableHeader>
-                        <TableBody>
-                          {currentState.invoiceDataList.map((invoice, index) => (
-                            <TableRow key={index}>
-                              <TableCell>{invoice.invoiceNumber}</TableCell>
-                              <TableCell>{parseLocalDate(invoice.invDate).toLocaleDateString()}</TableCell>
-                              <TableCell>{parseLocalDate(invoice.dueDate).toLocaleDateString()}</TableCell>
-                              <TableCell className="font-medium">${formatCurrency(invoice.amount)}</TableCell>
+                    {isMobile ? (
+                      <div className="mt-4">
+                        {renderMobileInvoiceCards()}
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto mt-4">
+                        <Table>
+                          <TableHeader>
+                            <TableRow>
+                              <TableHead>Factura</TableHead>
+                              <TableHead>Fecha</TableHead>
+                              <TableHead>Vencimiento</TableHead>
+                              <TableHead>Monto</TableHead>
                             </TableRow>
-                          ))}
-                        </TableBody>
-                      </Table>
-                    </div>
+                          </TableHeader>
+                          <TableBody>
+                            {currentState.invoiceDataList.map((invoice, index) => (
+                              <TableRow key={index}>
+                                <TableCell>{invoice.invoiceNumber}</TableCell>
+                                <TableCell>{parseLocalDate(invoice.invDate).toLocaleDateString()}</TableCell>
+                                <TableCell>{parseLocalDate(invoice.dueDate).toLocaleDateString()}</TableCell>
+                                <TableCell className="font-medium">${formatCurrency(invoice.amount)}</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    )}
                   </CollapsibleContent>
                 </Collapsible>
               </div>
@@ -833,15 +1171,18 @@ const InvoiceDetails = () => {
               <div>
                 <h3 className="text-lg font-medium mb-4 flex items-center">
                   <CreditCard className="h-5 w-5 mr-2" />
-                  Pagar con tarjeta
+                  Pagar con:
                 </h3>
                 
                 {/* Payment Method Selection */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                <div 
+                  ref={paymentMethodsRef}
+                  className={`grid gap-4 mb-6 ${isMobile ? 'grid-cols-2' : 'grid-cols-2 md:grid-cols-4'}`}
+                >
                   <button
                     onClick={() => setPaymentMethod('card')}
                     disabled={loadingPaymentMethods || !paymentMethods?.paymentMethods?.creditCard?.enabled}
-                    className={`p-2.5 border-2 rounded-lg flex flex-col items-center justify-center space-y-1 transition-colors ${
+                    className={`${isMobile ? 'p-4' : 'p-2.5'} border-2 rounded-lg flex flex-col items-center justify-center space-y-1 transition-colors ${
                       paymentMethod === 'card'
                         ? 'border-billpay-blue bg-blue-50'
                         : paymentMethods?.paymentMethods?.creditCard?.enabled
@@ -852,22 +1193,16 @@ const InvoiceDetails = () => {
                       paymentMethods.paymentMethods.creditCard.displayName : 
                       'Tarjeta de crédito no disponible para esta empresa'}
                   >
-                    <CreditCard className="h-5 w-5" />
-                    <span className="text-sm">
+                    <CreditCard className={`${isMobile ? 'h-6 w-6' : 'h-5 w-5'}`} />
+                    <span className={`${isMobile ? 'text-xs text-center' : 'text-sm'}`}>
                       {paymentMethods?.paymentMethods?.creditCard?.displayName || 'Tarjeta de crédito'}
                     </span>
                   </button>
                   
                   <button
-                    onClick={() => {
-                      setPaymentMethod('yappy');
-                      if (currentState?.mobile) {
-                        const cleaned = limpiarCelular(currentState.mobile);
-                        setYappyPhone(cleaned);
-                      }
-                    }}
+                    onClick={() => setPaymentMethod('yappy')}
                     disabled={loadingPaymentMethods || !paymentMethods?.paymentMethods?.yappy?.enabled}
-                    className={`p-2.5 border-2 rounded-lg flex flex-col items-center justify-center space-y-1 transition-colors ${
+                    className={`${isMobile ? 'p-4' : 'p-2.5'} border-2 rounded-lg flex flex-col items-center justify-center space-y-1 transition-colors ${
                       paymentMethod === 'yappy'
                         ? 'border-orange-500 bg-orange-50'
                         : paymentMethods?.paymentMethods?.yappy?.enabled
@@ -878,8 +1213,8 @@ const InvoiceDetails = () => {
                       paymentMethods.paymentMethods.yappy.displayName : 
                       'Yappy no disponible para esta empresa'}
                   >
-                    <Smartphone className="h-5 w-5" />
-                    <span className="text-sm">
+                    <Smartphone className={`${isMobile ? 'h-6 w-6' : 'h-5 w-5'}`} />
+                    <span className={`${isMobile ? 'text-xs text-center' : 'text-sm'}`}>
                       {paymentMethods?.paymentMethods?.yappy?.displayName || 'Yappy'}
                     </span>
                   </button>
@@ -887,7 +1222,7 @@ const InvoiceDetails = () => {
                   <button
                     onClick={() => setPaymentMethod('paypal')}
                     disabled={loadingPaymentMethods || !paymentMethods?.paymentMethods?.paypal?.enabled}
-                    className={`p-2.5 border-2 rounded-lg flex flex-col items-center justify-center space-y-1 transition-colors ${
+                    className={`${isMobile ? 'p-4' : 'p-2.5'} border-2 rounded-lg flex flex-col items-center justify-center space-y-1 transition-colors ${
                       paymentMethod === 'paypal'
                         ? 'border-blue-600 bg-blue-50'
                         : paymentMethods?.paymentMethods?.paypal?.enabled
@@ -898,8 +1233,8 @@ const InvoiceDetails = () => {
                       paymentMethods.paymentMethods.paypal.displayName : 
                       'PayPal no disponible para esta empresa'}
                   >
-                    <Wallet className="h-5 w-5" />
-                    <span className="text-sm">
+                    <Wallet className={`${isMobile ? 'h-6 w-6' : 'h-5 w-5'}`} />
+                    <span className={`${isMobile ? 'text-xs text-center' : 'text-sm'}`}>
                       {paymentMethods?.paymentMethods?.paypal?.displayName || 'PayPal'}
                     </span>
                   </button>
@@ -910,7 +1245,7 @@ const InvoiceDetails = () => {
                       setShowACHModal(true);
                     }}
                     disabled={loadingPaymentMethods || !paymentMethods?.paymentMethods?.ach?.enabled}
-                    className={`p-2.5 border-2 rounded-lg flex flex-col items-center justify-center space-y-1 transition-colors ${
+                    className={`${isMobile ? 'p-4' : 'p-2.5'} border-2 rounded-lg flex flex-col items-center justify-center space-y-1 transition-colors ${
                       paymentMethod === 'ach'
                         ? 'border-green-500 bg-green-50'
                         : paymentMethods?.paymentMethods?.ach?.enabled
@@ -921,8 +1256,8 @@ const InvoiceDetails = () => {
                       paymentMethods.paymentMethods.ach.displayName : 
                       'ACH no disponible para esta empresa'}
                   >
-                    <Building2 className="h-5 w-5" />
-                    <span className="text-sm">
+                    <Building2 className={`${isMobile ? 'h-6 w-6' : 'h-5 w-5'}`} />
+                    <span className={`${isMobile ? 'text-xs text-center' : 'text-sm'}`}>
                       {paymentMethods?.paymentMethods?.ach?.displayName || 'ACH'}
                     </span>
                   </button>
@@ -946,7 +1281,12 @@ const InvoiceDetails = () => {
                 
                 {/* Credit Card Form */}
                 {paymentMethod === 'card' && (
-                  <form onSubmit={e => { e.preventDefault(); handlePayment(); }}>
+                  <form onSubmit={e => { 
+                    e.preventDefault(); 
+                    if (!isProcessing) {
+                      handlePayment();
+                    }
+                  }}>
                     <div className="space-y-4">
                       <div>
                         <Label htmlFor="cardNumber">Número de tarjeta</Label>
@@ -958,7 +1298,7 @@ const InvoiceDetails = () => {
                             onChange={(e) => setCardNumber(formatCardNumber(e.target.value))}
                             maxLength={19}
                             type={showCardNumber ? "text" : "password"}
-                            className="pr-10"
+                            className={`pr-10 ${isMobile ? 'h-12 text-lg' : ''}`}
                           />
                           <button
                             type="button"
@@ -977,10 +1317,11 @@ const InvoiceDetails = () => {
                           placeholder="John Doe"
                           value={cardName}
                           onChange={(e) => setCardName(e.target.value)}
+                          className={`${isMobile ? 'h-12 text-lg' : ''}`}
                         />
                       </div>
                       
-                      <div className="grid grid-cols-2 gap-4">
+                      <div className={`grid gap-4 ${isMobile ? 'grid-cols-1' : 'grid-cols-2'}`}>
                         <div>
                           <Label htmlFor="expiryDate">Fecha de expiración (MM/YY)</Label>
                           <div className="relative">
@@ -991,7 +1332,7 @@ const InvoiceDetails = () => {
                               onChange={(e) => setExpiryDate(formatExpiryDate(e.target.value))}
                               maxLength={5}
                               type={showExpiryDate ? "text" : "password"}
-                              className="pr-10"
+                              className={`pr-10 ${isMobile ? 'h-12 text-lg' : ''}`}
                             />
                             <button
                               type="button"
@@ -1012,7 +1353,7 @@ const InvoiceDetails = () => {
                               onChange={(e) => setCvv(e.target.value.replace(/\D/g, ''))}
                               maxLength={4}
                               type={showCvv ? "text" : "password"}
-                              className="pr-10"
+                              className={`pr-10 ${isMobile ? 'h-12 text-lg' : ''}`}
                             />
                             <button 
                               type="button"
@@ -1024,21 +1365,27 @@ const InvoiceDetails = () => {
                           </div>
                         </div>
                       </div>
+                      {/* Checkbox de guardar tarjeta - Oculto temporalmente
                       <div className="flex items-center space-x-2">
                         <Checkbox 
                           id="saveCard" 
                           checked={saveCard}
                           onCheckedChange={(checked) => setSaveCard(checked as boolean)}
                         />
-                        <Label htmlFor="saveCard" className="text-sm cursor-pointer">
+                        <Label htmlFor="saveCard" className={`${isMobile ? 'text-sm' : 'text-sm'} cursor-pointer`}>
                           Guardar esta tarjeta para futuros pagos
                         </Label>
                       </div>
+                      */}
                       {/* Botón de pagar solo visible en método tarjeta */}
                       <div className="flex justify-center">
                         <Button
                           type="submit"
-                          className="bg-gradient-to-r from-billpay-cyan to-blue-500 hover:from-billpay-cyan/90 hover:to-blue-500/90 px-6 md:px-10 py-4 md:py-7 rounded-full text-base md:text-lg font-semibold shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105 w-[135%] sm:w-auto h-12 md:h-14 mt-4"
+                          className={`bg-gradient-to-r from-billpay-cyan to-blue-500 hover:from-billpay-cyan/90 hover:to-blue-500/90 rounded-full font-semibold shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-105 ${
+                            isMobile 
+                              ? 'w-full h-12 text-base px-6 py-3' 
+                              : 'px-6 md:px-10 py-4 md:py-7 text-base md:text-lg w-[135%] sm:w-auto h-12 md:h-14'
+                          } mt-4`}
                           size="lg"
                           disabled={isProcessing}
                         >
@@ -1061,17 +1408,21 @@ const InvoiceDetails = () => {
                           value={yappyPhone}
                           onChange={handleYappyPhoneChange}
                           maxLength={8}
-                          className="text-lg"
+                          className={`${isMobile ? 'text-lg h-12' : 'text-lg'}`}
                         />
                         <p className="text-sm text-gray-500 mt-1">
                           Ingrese su número de celular sin espacios ni guiones
                         </p>
                       </div>
                       <div className="flex justify-center">
-                        <BtnYappy theme="orange" rounded="true" style={{ width: '50%' }} />
+                        <BtnYappy 
+                          theme="orange" 
+                          rounded="true" 
+                          style={{ width: isMobile ? '80%' : '50%', minHeight: isMobile ? '48px' : 'auto' }} 
+                        />
                       </div>
-                      <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
-                        <p className="text-sm text-orange-800">
+                      <div className={`bg-orange-50 border border-orange-200 rounded-lg ${isMobile ? 'p-3' : 'p-4'}`}>
+                        <p className={`${isMobile ? 'text-sm' : 'text-sm'} text-orange-800`}>
                           <strong>Instrucciones:</strong><br/>
                           1. Haz clic en el botón "Pagar con Yappy"<br/>
                           2. Se abrirá la aplicación Yappy en tu dispositivo<br/>
@@ -1116,8 +1467,8 @@ const InvoiceDetails = () => {
           </div>
           
           <div>
-            <Card className="p-6 shadow-sm border-gray-100">
-              <h3 className="text-lg font-medium mb-4">Información del cliente</h3>
+            <Card className={`${isMobile ? 'p-4' : 'p-6'} shadow-sm border-gray-100`}>
+              <h3 className={`${isMobile ? 'text-lg' : 'text-lg'} font-medium mb-4`}>Información del cliente</h3>
               
               <div className="space-y-3">
                 <div>
@@ -1146,7 +1497,7 @@ const InvoiceDetails = () => {
                 
                 <div className="flex justify-between py-1 border-t mt-2 pt-2">
                   <span className="font-medium">Total:</span>
-                  <span className="font-bold text-black">${formatCurrency(currentState.totalAmount)}</span>
+                  <span className={`font-bold text-black ${isMobile ? 'text-lg' : ''}`}>${formatCurrency(currentState.totalAmount)}</span>
                 </div>
               </div>
             </Card>

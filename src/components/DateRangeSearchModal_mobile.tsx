@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
-import { Calendar, Search, Building2, FileDown, Loader2, Download, ChevronUp, ChevronDown, Settings, Eye, EyeOff } from 'lucide-react';
+import { Calendar, Search, Building2, FileDown, Loader2, Download, ChevronUp, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Card } from '@/components/ui/card';
 import * as XLSX from 'xlsx';
 import {
   Dialog,
@@ -21,9 +20,9 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import { toast } from 'sonner';
-import { clienteService } from '@/services';
-import { EmpresaProcesada } from '@/services/clienteService';
+import { clienteService, EmpresaProcesada } from '@/services';
 import { formatDate, formatAmount } from '@/lib/utils';
 
 interface Invoice {
@@ -99,40 +98,17 @@ export const DateRangeSearchModal = ({
     column: 'InvDate' | 'SerNr';
     order: 'asc' | 'desc';
   }>({ column: 'InvDate', order: 'desc' }); // desc = más reciente primero
-  
-  // Estados para mobile UI
-  const [isMobile, setIsMobile] = useState(false);
-  const [filtersExpanded, setFiltersExpanded] = useState(true);
-  
-  // Estados para selector de columnas (solo móvil)
-  const [showColumnSelector, setShowColumnSelector] = useState(false);
-  const [visibleColumns, setVisibleColumns] = useState({
-    nroDoc: true,
-    nroCufe: true,
-    tipo: true,
-    fechaEmision: true,
-    importe: true
-  });
+
+  // Estado para el colapso en móvil
+  const [isFiltersCollapsed, setIsFiltersCollapsed] = useState(false);
   
   // Actualizar la empresa seleccionada cuando cambie la empresa actual o se abra el modal
   useEffect(() => {
     if (isOpen) {
       setSelectedEmpresa(getInitialEmpresa());
-      setFiltersExpanded(true);
+      setIsFiltersCollapsed(false); // Reset del colapso al abrir
     }
   }, [isOpen, empresaActual, empresasDisponibles]);
-
-  // Detectar mobile
-  useEffect(() => {
-    const checkIsMobile = () => {
-      setIsMobile(window.innerWidth < 768);
-    };
-    
-    checkIsMobile();
-    window.addEventListener('resize', checkIsMobile);
-    
-    return () => window.removeEventListener('resize', checkIsMobile);
-  }, []);
 
   // Función para ordenar facturas
   const sortInvoices = (invoices: Invoice[], column: 'InvDate' | 'SerNr', order: 'asc' | 'desc') => {
@@ -159,7 +135,7 @@ export const DateRangeSearchModal = ({
 
   // Función para cambiar el orden
   const handleSort = (column: 'InvDate' | 'SerNr') => {
-    const newOrder: 'asc' | 'desc' = sortConfig.column === column && sortConfig.order === 'desc' ? 'asc' : 'desc';
+    const newOrder = sortConfig.column === column && sortConfig.order === 'desc' ? 'asc' : 'desc';
     const newConfig = { column, order: newOrder };
     
     setSortConfig(newConfig);
@@ -178,6 +154,11 @@ export const DateRangeSearchModal = ({
     }
 
     setLoading(true);
+    
+    // Colapsar filtros en móvil después de buscar
+    if (window.innerWidth < 768) {
+      setIsFiltersCollapsed(true);
+    }
     
     try {
       let response;
@@ -265,10 +246,6 @@ export const DateRangeSearchModal = ({
         toast.info('No se encontraron facturas en el rango seleccionado');
       } else {
         toast.success(`Se encontraron ${invoices.length} facturas`);
-        // Colapsar filtros en móvil después de la búsqueda
-        if (isMobile) {
-          setFiltersExpanded(false);
-        }
       }
       
     } catch (error) {
@@ -320,16 +297,8 @@ export const DateRangeSearchModal = ({
     setEndDate(dates.end);
     setSelectedEmpresa(getInitialEmpresa());
     setSearchResults([]);
+    setIsFiltersCollapsed(false);
     setSortConfig({ column: 'InvDate', order: 'desc' }); // Reset to default sort config
-    setFiltersExpanded(true);
-    setShowColumnSelector(false);
-    setVisibleColumns({
-      nroDoc: true,
-      nroCufe: true,
-      tipo: true,
-      fechaEmision: true,
-      importe: true
-    });
     onClose();
   };
 
@@ -406,332 +375,239 @@ export const DateRangeSearchModal = ({
 
   return (
     <Dialog open={isOpen} onOpenChange={handleClose}>
-      <DialogContent className="max-w-[900px] w-full h-full md:max-h-[80vh] md:h-[80vh] p-0 gap-0 flex flex-col overflow-hidden">
-        <DialogHeader className="flex-shrink-0 p-4 pb-2 md:p-6 md:pb-2 border-b">
-          <DialogTitle className="flex items-center gap-2">
-            <Calendar className="h-5 w-5 text-billpay-blue" />
+      <DialogContent className="sm:max-w-[900px] max-h-[95vh] md:max-h-[90vh] w-[95vw] md:w-auto p-0 gap-0 flex flex-col overflow-hidden">
+        <DialogHeader className="p-3 pb-2 md:p-6 md:pb-4 shrink-0">
+          <DialogTitle className="flex items-center gap-2 text-lg md:text-xl">
+            <Calendar className="h-4 w-4 md:h-5 md:w-5 text-billpay-blue" />
             Facturas históricas
           </DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="text-sm">
             {`Buscar facturas del cliente ${clientCode} - ${clientName}`}
           </DialogDescription>
         </DialogHeader>
         
-        <div className="flex-shrink-0 p-4 md:p-6 border-b">
-          {/* Controles de búsqueda */}
-          <div className="bg-gray-50 rounded-lg overflow-hidden">
-            <div 
-              className="p-3 cursor-pointer flex items-center justify-between bg-gray-100 border-b md:hidden"
-              onClick={() => setFiltersExpanded(!filtersExpanded)}
-            >
-              <span className="font-medium text-sm">Filtros de búsqueda</span>
-              {filtersExpanded ? (
-                <ChevronUp className="h-4 w-4" />
-              ) : (
-                <ChevronDown className="h-4 w-4" />
-              )}
-            </div>
-            
-            <div className={`${
-              !filtersExpanded ? 'hidden md:block' : ''
-            } p-4 space-y-3`}>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div>
-                  <Label htmlFor="startDate">
-                    Fecha Inicial
-                  </Label>
-                  <Input
-                    id="startDate"
-                    type="date"
-                    value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)}
-                    className="w-full"
-                  />
-                </div>
-                
-                <div>
-                  <Label htmlFor="endDate">
-                    Fecha Final
-                  </Label>
-                  <Input
-                    id="endDate"
-                    type="date"
-                    value={endDate}
-                    onChange={(e) => setEndDate(e.target.value)}
-                    className="w-full"
-                  />
-                </div>
-                
-                {empresasDisponibles.length > 0 && (
-                  <div>
-                    <Label htmlFor="empresa">
-                      <Building2 className="inline h-4 w-4 mr-1" />
-                      Empresa
-                    </Label>
-                    <Select value={selectedEmpresa} onValueChange={setSelectedEmpresa}>
-                      <SelectTrigger className="w-full">
-                        <SelectValue placeholder="Seleccione una empresa" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {empresasDisponibles.map((empresa) => (
-                          <SelectItem key={empresa.CompCode} value={empresa.CompCode}>
-                            {empresa.CompName}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                )}
-              </div>
-              
-              <div className="flex gap-2">
-                <Button
-                  onClick={handleSearch}
-                  disabled={loading || !startDate || !endDate}
-                  className="flex-1 bg-billpay-blue hover:bg-billpay-blue/90 text-white"
-                >
-                  {loading ? (
-                    <>
-                      <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                      Buscando...
-                    </>
-                  ) : (
-                    <>
-                      <Search className="h-4 w-4 mr-2" />
-                      Buscar Facturas
-                    </>
+        <div className="flex-1 overflow-hidden px-3 md:px-6 pb-3 md:pb-6">
+          <div className="space-y-3 md:space-y-4 h-full flex flex-col">
+            {/* Controles de búsqueda con colapso en móvil */}
+            <div className="bg-gray-50 rounded-lg overflow-hidden shrink-0">
+              {/* Header de filtros con botón de colapso en móvil */}
+              <div className="p-3 md:p-4 border-b border-gray-200 md:border-b-0">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-medium text-gray-700">Filtros de búsqueda</h3>
+                  {searchResults.length > 0 && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setIsFiltersCollapsed(!isFiltersCollapsed)}
+                      className="md:hidden text-billpay-blue hover:bg-billpay-blue/10"
+                    >
+                      {isFiltersCollapsed ? (
+                        <ChevronDown className="h-4 w-4" />
+                      ) : (
+                        <ChevronUp className="h-4 w-4" />
+                      )}
+                    </Button>
                   )}
-                </Button>
+                </div>
+              </div>
+
+              {/* Controles de filtros */}
+              <div className={`${isFiltersCollapsed ? 'hidden md:block' : 'block'} p-3 md:p-4 space-y-3`}>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 md:gap-4">
+                  <div>
+                    <Label htmlFor="startDate" className="text-sm">
+                      Fecha Inicial
+                    </Label>
+                    <Input
+                      id="startDate"
+                      type="date"
+                      value={startDate}
+                      onChange={(e) => setStartDate(e.target.value)}
+                      className="w-full text-sm"
+                    />
+                  </div>
+                  
+                  <div>
+                    <Label htmlFor="endDate" className="text-sm">
+                      Fecha Final
+                    </Label>
+                    <Input
+                      id="endDate"
+                      type="date"
+                      value={endDate}
+                      onChange={(e) => setEndDate(e.target.value)}
+                      className="w-full text-sm"
+                    />
+                  </div>
+                  
+                  {empresasDisponibles.length > 0 && (
+                    <div>
+                      <Label htmlFor="empresa" className="text-sm">
+                        <Building2 className="inline h-4 w-4 mr-1" />
+                        Empresa
+                      </Label>
+                      <Select value={selectedEmpresa} onValueChange={setSelectedEmpresa}>
+                        <SelectTrigger className="w-full text-sm">
+                          <SelectValue placeholder="Seleccione una empresa" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {empresasDisponibles.map((empresa) => (
+                            <SelectItem key={empresa.CompCode} value={empresa.CompCode}>
+                              {empresa.CompName}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+                </div>
                 
-                {searchResults.length > 0 && (
+                <div className="flex flex-col md:flex-row gap-2">
                   <Button
-                    onClick={exportToExcel}
-                    variant="outline"
-                    className="flex items-center gap-2 text-billpay-blue border-billpay-blue hover:bg-billpay-blue hover:text-white"
+                    onClick={handleSearch}
+                    disabled={loading || !startDate || !endDate}
+                    className="flex-1 bg-billpay-blue hover:bg-billpay-blue/90 text-white text-sm"
                   >
-                    <Download className="h-4 w-4" />
-                    Exportar Excel
+                    {loading ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Buscando...
+                      </>
+                    ) : (
+                      <>
+                        <Search className="h-4 w-4 mr-2" />
+                        Buscar Facturas
+                      </>
+                    )}
                   </Button>
-                )}
+                  
+                  {searchResults.length > 0 && (
+                    <Button
+                      onClick={exportToExcel}
+                      variant="outline"
+                      className="flex items-center gap-2 text-billpay-blue border-billpay-blue hover:bg-billpay-blue hover:text-white text-sm"
+                    >
+                      <Download className="h-4 w-4" />
+                      <span className="hidden md:inline">Exportar Excel</span>
+                      <span className="md:hidden">Excel</span>
+                    </Button>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        </div>
 
-        {/* Selector de Columnas (Solo Móvil) */}
-        {isMobile && (
-          <div className="flex-shrink-0 px-4 pb-2">
-            <Card className="bg-blue-50 border-blue-200">
-              <div 
-                className="p-3 cursor-pointer flex items-center justify-between"
-                onClick={() => setShowColumnSelector(!showColumnSelector)}
-              >
-                <span className="font-medium text-sm flex items-center gap-2">
-                  <Settings className="h-4 w-4" />
-                  Configurar Columnas
-                </span>
-                {showColumnSelector ? (
-                  <ChevronUp className="h-4 w-4" />
-                ) : (
-                  <ChevronDown className="h-4 w-4" />
-                )}
-              </div>
-              
-              {showColumnSelector && (
-                <div className="px-3 pb-3 space-y-2">
-                  <div className="grid grid-cols-2 gap-2">
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={visibleColumns.nroDoc}
-                        onChange={(e) => setVisibleColumns(prev => ({ ...prev, nroDoc: e.target.checked }))}
-                        className="rounded"
-                      />
-                      {visibleColumns.nroDoc ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
-                      Nro. Doc
-                    </label>
-                    
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={visibleColumns.nroCufe}
-                        onChange={(e) => setVisibleColumns(prev => ({ ...prev, nroCufe: e.target.checked }))}
-                        className="rounded"
-                      />
-                      {visibleColumns.nroCufe ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
-                      Nro. CUFE
-                    </label>
-                    
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={visibleColumns.tipo}
-                        onChange={(e) => setVisibleColumns(prev => ({ ...prev, tipo: e.target.checked }))}
-                        className="rounded"
-                      />
-                      {visibleColumns.tipo ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
-                      Tipo
-                    </label>
-                    
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={visibleColumns.fechaEmision}
-                        onChange={(e) => setVisibleColumns(prev => ({ ...prev, fechaEmision: e.target.checked }))}
-                        className="rounded"
-                      />
-                      {visibleColumns.fechaEmision ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
-                      Fecha Emisión
-                    </label>
-                    
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={visibleColumns.importe}
-                        onChange={(e) => setVisibleColumns(prev => ({ ...prev, importe: e.target.checked }))}
-                        className="rounded"
-                      />
-                      {visibleColumns.importe ? <Eye className="h-3 w-3" /> : <EyeOff className="h-3 w-3" />}
-                      Importe
-                    </label>
-                  </div>
-                </div>
-              )}
-            </Card>
-          </div>
-        )}
-
-        <div className={`flex-1 min-h-0 overflow-y-auto ${isMobile ? 'p-2 pb-1' : 'p-4 md:p-6'}`}>
-          {/* Resultados */}
-          <div>
-            <div className="rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    {(!isMobile || visibleColumns.nroDoc) && (
-                      <TableHead>
+            {/* Resultados */}
+            <div className="flex-1 overflow-hidden">
+              <ScrollArea className="h-full rounded-md border">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead className="text-xs md:text-sm">
                         <Button
                           variant="ghost"
                           size="sm"
                           onClick={() => handleSort('SerNr')}
-                          className="h-8 p-2 font-medium hover:bg-gray-100 flex items-center gap-1"
+                          className="h-6 md:h-8 p-1 md:p-2 font-medium hover:bg-gray-100 flex items-center gap-1 text-xs md:text-sm"
                         >
                           Nro. Doc
                           {sortConfig.column === 'SerNr' && (
                             sortConfig.order === 'desc' ? (
-                              <ChevronDown className="h-4 w-4" />
+                              <ChevronDown className="h-3 w-3 md:h-4 md:w-4" />
                             ) : (
-                              <ChevronUp className="h-4 w-4" />
+                              <ChevronUp className="h-3 w-3 md:h-4 md:w-4" />
                             )
                           )}
                         </Button>
                       </TableHead>
-                    )}
-                    {(!isMobile || visibleColumns.nroCufe) && (
-                      <TableHead>Nro. CUFE</TableHead>
-                    )}
-                    {(!isMobile || visibleColumns.tipo) && (
-                      <TableHead>Tipo</TableHead>
-                    )}
-                    {(!isMobile || visibleColumns.fechaEmision) && (
-                      <TableHead>
+                      <TableHead className="hidden md:table-cell text-xs md:text-sm">Nro. CUFE</TableHead>
+                      <TableHead className="text-xs md:text-sm">Tipo</TableHead>
+                      <TableHead className="text-xs md:text-sm">
                         <Button
                           variant="ghost"
                           size="sm"
                           onClick={() => handleSort('InvDate')}
-                          className="h-8 p-2 font-medium hover:bg-gray-100 flex items-center gap-1"
+                          className="h-6 md:h-8 p-1 md:p-2 font-medium hover:bg-gray-100 flex items-center gap-1 text-xs md:text-sm"
                         >
-                          Fecha Emisión
+                          Fecha
                           {sortConfig.column === 'InvDate' && (
                             sortConfig.order === 'desc' ? (
-                              <ChevronDown className="h-4 w-4" />
+                              <ChevronDown className="h-3 w-3 md:h-4 md:w-4" />
                             ) : (
-                              <ChevronUp className="h-4 w-4" />
+                              <ChevronUp className="h-3 w-3 md:h-4 md:w-4" />
                             )
                           )}
                         </Button>
                       </TableHead>
-                    )}
-                    {(!isMobile || visibleColumns.importe) && (
-                      <TableHead className="text-right">Importe</TableHead>
-                    )}
-                    <TableHead className="text-center">PDF</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {searchResults.length === 0 ? (
-                    <TableRow>
-                      <TableCell colSpan={6} className="text-center">
-                        No se encontraron facturas
-                      </TableCell>
+                      <TableHead className="text-right text-xs md:text-sm">Importe</TableHead>
+                      <TableHead className="text-center text-xs md:text-sm">PDF</TableHead>
                     </TableRow>
-                  ) : (
-                    searchResults.map((invoice) => (
-                      <TableRow key={invoice.id}>
-                        {(!isMobile || visibleColumns.nroDoc) && (
-                          <TableCell>{invoice.SerNr}</TableCell>
-                        )}
-                        {(!isMobile || visibleColumns.nroCufe) && (
-                          <TableCell>{invoice.OfficialSerNr}</TableCell>
-                        )}
-                        {(!isMobile || visibleColumns.tipo) && (
-                          <TableCell>
-                            {invoice.FormaPago}
-                          </TableCell>
-                        )}
-                        {(!isMobile || visibleColumns.fechaEmision) && (
-                          <TableCell>{formatDate(invoice.InvDate)}</TableCell>
-                        )}
-                        {(!isMobile || visibleColumns.importe) && (
-                          <TableCell className={`font-medium text-right ${invoice.FormaPago === 'Nota de Crédito' ? 'text-red-600' : ''}`}>
-                            {invoice.FormaPago === 'Nota de Crédito' ? `-${formatAmount(invoice.Sum4)}` : formatAmount(invoice.Sum4)}
-                          </TableCell>
-                        )}
-                        <TableCell className="text-center">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              downloadInvoicePdf(invoice.SerNr, invoice.OfficialSerNr, invoice.CompanyCode);
-                            }}
-                            disabled={!invoice.OfficialSerNr || invoice.OfficialSerNr.trim() === '' || downloadingPdf === invoice.SerNr}
-                            className="h-8 w-8 p-0 text-billpay-blue border-billpay-blue hover:bg-billpay-blue hover:text-white disabled:opacity-50"
-                            title={
-                              downloadingPdf === invoice.SerNr 
-                                ? 'Descargando...' 
-                                : invoice.OfficialSerNr && invoice.OfficialSerNr.trim() !== '' 
-                                  ? 'Descargar PDF' 
-                                  : 'PDF no disponible'
-                            }
-                          >
-                            {downloadingPdf === invoice.SerNr ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <FileDown className="h-4 w-4" />
-                            )}
-                          </Button>
+                  </TableHeader>
+                  <TableBody>
+                    {searchResults.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={6} className="text-center text-sm">
+                          No se encontraron facturas
                         </TableCell>
                       </TableRow>
-                    ))
-                  )}
-                </TableBody>
-              </Table>
+                    ) : (
+                      searchResults.map((invoice) => (
+                        <TableRow key={invoice.id}>
+                          <TableCell className="text-xs md:text-sm font-mono">{invoice.SerNr}</TableCell>
+                          <TableCell className="hidden md:table-cell text-xs md:text-sm font-mono">{invoice.OfficialSerNr}</TableCell>
+                          <TableCell className="text-xs md:text-sm">
+                            <span className="inline-block max-w-[100px] md:max-w-none truncate">
+                              {invoice.FormaPago}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-xs md:text-sm">{formatDate(invoice.InvDate)}</TableCell>
+                          <TableCell className={`font-medium text-right text-xs md:text-sm ${invoice.FormaPago === 'Nota de Crédito' ? 'text-red-600' : ''}`}>
+                            {invoice.FormaPago === 'Nota de Crédito' ? `-${formatAmount(invoice.Sum4)}` : formatAmount(invoice.Sum4)}
+                          </TableCell>
+                          <TableCell className="text-center">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                downloadInvoicePdf(invoice.SerNr, invoice.OfficialSerNr, invoice.CompanyCode);
+                              }}
+                              disabled={!invoice.OfficialSerNr || invoice.OfficialSerNr.trim() === '' || downloadingPdf === invoice.SerNr}
+                              className="h-6 w-6 md:h-8 md:w-8 p-0 text-billpay-blue border-billpay-blue hover:bg-billpay-blue hover:text-white disabled:opacity-50"
+                              title={
+                                downloadingPdf === invoice.SerNr 
+                                  ? 'Descargando...' 
+                                  : invoice.OfficialSerNr && invoice.OfficialSerNr.trim() !== '' 
+                                    ? 'Descargar PDF' 
+                                    : 'PDF no disponible'
+                              }
+                            >
+                              {downloadingPdf === invoice.SerNr ? (
+                                <Loader2 className="h-3 w-3 md:h-4 md:w-4 animate-spin" />
+                              ) : (
+                                <FileDown className="h-3 w-3 md:h-4 md:w-4" />
+                              )}
+                            </Button>
+                          </TableCell>
+                        </TableRow>
+                      ))
+                    )}
+                  </TableBody>
+                </Table>
+              </ScrollArea>
             </div>
           </div>
         </div>
         
-        <div className={`flex-shrink-0 border-t ${isMobile ? 'p-2' : 'p-4 md:p-6'}`}>
-          <div className="flex justify-end">
-            <Button 
-              type="button" 
-              variant="outline" 
-              onClick={handleClose}
-            >
-              Cerrar
-            </Button>
-          </div>
-        </div>
+        <DialogFooter className="p-3 md:p-6 pt-0 md:pt-2 shrink-0">
+          <Button 
+            type="button" 
+            variant="outline" 
+            onClick={handleClose}
+            className="text-sm"
+          >
+            Cerrar
+          </Button>
+        </DialogFooter>
       </DialogContent>
     </Dialog>
   );

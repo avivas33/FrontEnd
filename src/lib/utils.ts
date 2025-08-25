@@ -35,11 +35,17 @@ export function formatAmount(amountStr?: string): string {
   const amount = parseFloat(amountStr || "0");
   if (isNaN(amount)) return "$0.00";
   
-  // Usar formato estándar USD para evitar problemas de locale
-  return new Intl.NumberFormat('en-US', {
-    style: 'currency',
-    currency: 'USD',
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  }).format(amount);
+  // Formateo personalizado independiente del locale
+  // Separar la parte entera y decimal
+  const isNegative = amount < 0;
+  const absoluteAmount = Math.abs(amount);
+  const [integerPart, decimalPart = "00"] = absoluteAmount.toFixed(2).split(".");
+  
+  // Agregar comas para separar miles
+  const formattedInteger = integerPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  
+  // Construir el resultado final
+  const formattedAmount = `$${formattedInteger}.${decimalPart}`;
+  
+  return isNegative ? `-${formattedAmount}` : formattedAmount;
 }
