@@ -300,7 +300,7 @@ const InvoiceDetails = () => {
             const total = currentState.totalAmount.toFixed(2);
             const body = {
               orderId: currentState.invoiceDataList[0].invoiceNumber,
-              domain: "http://portal.celero.net",
+              domain: "https://selfservice-dev.celero.network",
               paymentDate: nowEpoch,
               aliasYappy: aliasYappy,
               ipnUrl: `${window.location.origin}/api/clientes/yappy/ipn`,
