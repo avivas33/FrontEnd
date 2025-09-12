@@ -216,7 +216,7 @@ const probarConexion = async () => {
 
 La API ya está configurada para permitir requests desde:
 - `https://selfservice.celero.network`
-- `https://selfservice-dev.celero.network`
+- `https://portal.celero.net/`
 - `https://celero.network`
 - `https://api.celero.network`
 

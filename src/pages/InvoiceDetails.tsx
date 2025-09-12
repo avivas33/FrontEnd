@@ -14,6 +14,7 @@ import { ACHPaymentModal } from '@/components/ACHPaymentModal';
 import { useActivityTracking } from '@/hooks/useActivityTracking';
 import { useIsMobile } from '@/hooks/use-mobile';
 import { clienteService, pagoService } from '@/services';
+import { apiClient } from '@/config/api';
 
 // Missing interfaces
 interface CompanyPaymentMethods {
@@ -198,6 +199,9 @@ const InvoiceDetails = () => {
   const [paymentMethods, setPaymentMethods] = useState<CompanyPaymentMethods | null>(null);
   const [loadingPaymentMethods, setLoadingPaymentMethods] = useState(true);
   
+  // Yappy configuration
+  const [yappyConfig, setYappyConfig] = useState<{ domain: string; ipnUrl: string } | null>(null);
+  
   // States para cargar factura por parámetro
   const [loadingInvoice, setLoadingInvoice] = useState(false);
   const [invoiceState, setInvoiceState] = useState<LocationState & { mobile?: string; eMail?: string } | null>(null);
@@ -255,6 +259,21 @@ const InvoiceDetails = () => {
     loadPaymentMethods();
   }, [currentState?.empresaSeleccionada, currentState?.invoiceDataList]);
 
+  // Fetch Yappy configuration
+  useEffect(() => {
+    const fetchYappyConfig = async () => {
+      try {
+        const config = await apiClient.get('/api/clientes/yappy/config');
+        console.log('🔧 Yappy Config fetched:', config);
+        setYappyConfig(config);
+      } catch (error) {
+        console.error('Error fetching Yappy config:', error);
+      }
+    };
+
+    fetchYappyConfig();
+  }, []);
+
   // Efecto para hacer scroll cuando los métodos de pago terminen de cargar en móvil
   useEffect(() => {
     let isMounted = true;
@@ -300,15 +319,19 @@ const InvoiceDetails = () => {
             const total = currentState.totalAmount.toFixed(2);
             const body = {
               orderId: currentState.invoiceDataList[0].invoiceNumber,
-              domain: "http://portal.celero.net",
+              domain: yappyConfig?.domain || "https://portal.celero.net/",
               paymentDate: nowEpoch,
               aliasYappy: aliasYappy,
-              ipnUrl: `${window.location.origin}/api/clientes/yappy/ipn`,
+              ipnUrl: "", // Se usa el valor configurado en el backend
               discount: "0.00",
               taxes: "0.00",
               subtotal: total,
               total: total
             };
+            
+            console.log('🚀 Enviando orden Yappy con IPN URL:', body.ipnUrl);
+            console.log('📦 Body completo:', body);
+            
             const result = await pagoService.crearOrdenYappy(body);
             if (result && result.body?.token && result.body?.documentName && result.body?.transactionId) {
               const params = {
@@ -718,7 +741,9 @@ const InvoiceDetails = () => {
           tax: '0',
           tip: '0',
           // --- Campos adicionales para notificaciones y configuración ---
-          customer_email: currentState.eMail || 'not-provided@celero.com',
+          customer_email: currentState.eMail && currentState.eMail.trim() !== '' 
+            ? currentState.eMail 
+            : undefined, // No enviar email si no está disponible
           customer_name: currentState.invoiceDataList[0].clientName,
           order_id: invoiceNumbers,
           description: `Pago de facturas: ${invoiceNumbers}`,
